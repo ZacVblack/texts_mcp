@@ -139,6 +139,8 @@ type Heartbeat struct {
 	LastSyncAtMs   int64  `json:"last_sync_at_ms,omitempty"`
 	BridgeVersion  string `json:"bridge_version"`
 	PendingUploads int    `json:"pending_uploads"`
+	// CanSend tells the Worker this bridge sends approved texts.
+	CanSend bool `json:"can_send"`
 }
 
 func (w *workerClient) SendHeartbeat(ctx context.Context, hb *Heartbeat) error {

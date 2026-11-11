@@ -1,13 +1,16 @@
 // texts-mcp Worker: stores texts uploaded by texts-bridge on the phone and serves
-// them to Claude as a read-only MCP connector. No dependencies.
+// them to Claude as an MCP connector. Claude can read texts, and send one only
+// through a preview the user approves (see send.js). No dependencies.
 //
 // Secrets and settings (wrangler.jsonc / dashboard):
 //   PASSPHRASE      secret, 16+ characters, same as typed into texts-bridge setup
 //   TIMEZONE        IANA zone for times shown to Claude (default America/New_York)
 //   RETENTION_DAYS  how long texts are kept (default 30)
+//   SENDING_ENABLED "false" turns the send tools off (default on)
 //   DB              D1 database binding
 
 import { handleMcp } from "./mcp.js";
+import { OUTBOX_SCHEMA, bridgeOutboxNext, bridgeOutboxResult, pruneOutbox } from "./send.js";
 
 const enc = new TextEncoder();
 const PURPOSE_BRIDGE = "texts-mcp:bridge:v1";
@@ -104,6 +107,7 @@ const SCHEMA = [
      participants TEXT,
      updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+  ...OUTBOX_SCHEMA,
 ];
 
 let schemaReady = null;
@@ -212,9 +216,19 @@ async function handleBridge(request, env, ctx, sub) {
         last_sync_at_ms: num(b.last_sync_at_ms),
         bridge_version: str(b.bridge_version, 40),
         pending_uploads: num(b.pending_uploads),
+        can_send: b.can_send === true,
       };
       await kvPut(db, "heartbeat", JSON.stringify(hb));
       return json({ ok: true });
+    }
+
+    if (sub === "/outbox" && request.method === "GET") {
+      return json(await bridgeOutboxNext(env, new URL(request.url)));
+    }
+
+    if (sub === "/outbox/result" && request.method === "POST") {
+      const b = await readJson(request);
+      return json(await bridgeOutboxResult(env, b || {}));
     }
 
     if (sub === "/ingest" && request.method === "POST") {
@@ -346,6 +360,7 @@ export async function prune(env, now = Date.now()) {
       "DELETE FROM conversations WHERE COALESCE(last_message_at, 0) < ? AND id NOT IN (SELECT DISTINCT conversation_id FROM messages)"
     ).bind(cutoff),
   ]);
+  await pruneOutbox(env.DB, cutoff);
 }
 
 export function json(obj, status = 200, headers = {}) {

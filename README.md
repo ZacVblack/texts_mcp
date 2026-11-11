@@ -1,9 +1,10 @@
 # texts-mcp
 
-Read your Android phone's texts from Claude, for free.
+Read your Android phone's texts from Claude, and let Claude send a text after you approve the exact draft. Free.
 
 - **Covers:** SMS, MMS and RCS (blue-bubble style chat), group chats, texts you sent, muted and archived chats.
-- **Read-only:** Claude can read and search texts. It cannot send, delete or change anything.
+- **Reads freely, sends only with your yes:** Claude can read and search texts. To send one it first shows you a preview (who it goes to and the exact words), and sends only after you approve that exact draft. It can't delete or change anything.
+- **Existing chats first:** a text goes into the conversation you already have with that person or group (a group chat gets one text in the group). A new conversation is only started when you ask for one.
 - **Private:** login and verification codes are blanked out on the phone before they leave it. Spam, blocked and deleted chats never leave the phone. Texts older than 30 days are deleted.
 - **Free:** the phone does the work in Termux, and a free Cloudflare Worker stores the texts and serves them to Claude.
 
@@ -73,7 +74,7 @@ Treat the connector address like a password: anyone with it can read your texts.
 - **Opening Messages for web in a browser:** texts-bridge takes the link back within a few minutes, so use the phone app instead.
 - **"Run texts-bridge pair":** Google unlinked it (for example after a password change, signing out, or a sign-in copied from Chrome). The log line says which. Double-click the .exe on the computer again and link from a Firefox private window. The phone picks up the new link by itself within 2 minutes.
 - **Check it's alive:** in Termux, `tail -f ~/.texts-mcp/bridge.log`. Or ask Claude for the texts link status.
-- **Update:** run the install command in Termux again, and download the newest .exe.
+- **Update:** run the install command in Termux again, and download the newest .exe. (The .exe is only needed for pairing; sending only needs the phone updated.)
 - **Change the passphrase:** change the `PASSPHRASE` secret, run `texts-bridge setup` on both devices, then pair again. The connector address changes too.
 
 ## Claude's tools
@@ -85,6 +86,20 @@ Treat the connector address like a password: anyone with it can read your texts.
 | `get_conversation` | One conversation by name, number or id |
 | `search_texts` | Find texts containing words |
 | `texts_status` | Whether the phone link is working |
+| `prepare_text` | Preview a text into an existing conversation: who it goes to and the exact words. Sends nothing. |
+| `prepare_new_text` | Preview a text that starts a new conversation with a number. Refuses if you already have a chat with that number. |
+| `send_text` | Send a previewed text after you approve it |
+| `send_status` | Whether a sent text went out, was delivered or read |
+| `cancel_text` | Cancel a text the phone hasn't picked up yet |
+
+### How sending stays safe
+
+- **Two steps:** `prepare_text` returns a preview and a one-time token that lasts 10 minutes. `send_text` needs that token plus the same recipient and the same words, character for character. Any change voids the preview, so a new draft needs a new yes.
+- **Each token works once,** and a send is never handed to the phone twice.
+- **No late surprises:** if the phone doesn't pick a send up within 5 minutes (off, no signal), it's dropped, not sent later.
+- **Limits:** at most 5 texts in 10 minutes and 40 a day.
+- **Off switch:** in the Worker's **Settings** > **Variables and Secrets**, add a text variable `SENDING_ENABLED` = `false`. The send tools disappear and nothing queued goes out. Delete it (or set `true`) to turn sending back on.
+- Texts you send from Claude come from your own number, exactly like texts you type in Google Messages.
 
 ## Development
 
