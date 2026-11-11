@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import worker, { deriveToken, _resetSchemaFlag } from "../src/index.js";
+import worker, { deriveToken, _resetSchemaFlag, TOUCH_EVERY_MS } from "../src/index.js";
 import { normalizeNumber } from "../src/send.js";
 
 const PASS = "correct horse battery staple";
@@ -301,4 +301,47 @@ test("the phone's long poll picks up a send queued while it waits", async () => 
   const s = await tool(env, "send_text", { token: p.token, conversation_id: "c-sam", text: "while waiting" });
   const got = (await poll).data;
   assert.equal(got.item && got.item.id, s.send_id);
+});
+
+test("outbox polls, send results and uploads count as phone contact", async () => {
+  const env = await setup();
+  const hbAt = async () => (await env.DB.prepare("SELECT v, updated_at FROM kv WHERE k = 'heartbeat'").first());
+  const age = (ms) => env.DB.prepare("UPDATE kv SET updated_at = ? WHERE k = 'heartbeat'").bind(Date.now() - ms).run();
+  const before = (await hbAt()).v;
+
+  // An outbox poll moves last contact forward but keeps what the heartbeat said.
+  await age(20 * 60 * 1000);
+  assert.equal((await tool(env, "texts_status")).link.ok, false);
+  await bridge(env, "GET", "/outbox?wait=0");
+  let row = await hbAt();
+  assert.ok(Date.now() - row.updated_at < 5000);
+  assert.equal(row.v, before);
+  assert.equal((await tool(env, "texts_status")).link.ok, true);
+
+  // A send result and an upload count too.
+  await age(20 * 60 * 1000);
+  await bridge(env, "POST", "/outbox/result", { id: "nope", state: "sent" });
+  assert.ok(Date.now() - (await hbAt()).updated_at < 5000);
+  await age(20 * 60 * 1000);
+  await bridge(env, "POST", "/ingest", { conversations: [], messages: [] });
+  assert.ok(Date.now() - (await hbAt()).updated_at < 5000);
+
+  // Within TOUCH_EVERY_MS it doesn't rewrite the row.
+  await age(TOUCH_EVERY_MS / 2);
+  const t = (await hbAt()).updated_at;
+  await bridge(env, "GET", "/outbox?wait=0");
+  assert.equal((await hbAt()).updated_at, t);
+
+  // A rejected caller doesn't count as the phone.
+  await age(20 * 60 * 1000);
+  const stale = (await hbAt()).updated_at;
+  await call(env, "GET", "/bridge/outbox?wait=0", undefined, "wrong-token");
+  assert.equal((await hbAt()).updated_at, stale);
+});
+
+test("phone contact without any heartbeat yet creates nothing", async () => {
+  _resetSchemaFlag();
+  const env = { DB: fakeD1(), PASSPHRASE: PASS, TIMEZONE: "America/New_York", SEND_WAIT_MS: "0" };
+  await bridge(env, "GET", "/outbox?wait=0");
+  assert.equal(await env.DB.prepare("SELECT v FROM kv WHERE k = 'heartbeat'").first(), null);
 });
