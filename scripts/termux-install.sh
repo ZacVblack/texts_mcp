@@ -16,9 +16,14 @@ case "$(uname -m)" in
   *) echo "This phone's processor ($(uname -m)) is not supported." >&2; exit 1 ;;
 esac
 
-echo "Installing the tools texts-bridge needs..."
-pkg update -y >/dev/null 2>&1 || true
-pkg install -y curl ca-certificates procps >/dev/null
+echo "Updating Termux and installing the tools texts-bridge needs."
+echo "The first time, this can take a few minutes."
+# Never stop to ask about changed config files; keep the current ones.
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS=(-q -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+apt-get -q update || true
+apt-get "${APT_OPTS[@]}" full-upgrade || true
+apt-get "${APT_OPTS[@]}" install curl ca-certificates procps
 
 echo "Downloading texts-bridge..."
 curl -fL --retry 3 -o "$BIN.new" "https://github.com/$REPO/releases/latest/download/$ASSET"
