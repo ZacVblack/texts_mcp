@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +38,9 @@ const (
 	syncPageSize       = 50
 	syncMaxPages       = 8
 	watermarkOverlapMs = 2 * 60 * 1000
+
+	// After this many syncs in a row time out, drop the connection and reconnect.
+	syncTimeoutsBeforeReconnect = 3
 )
 
 var (
@@ -65,6 +70,30 @@ type runner struct {
 	lastTextAt      atomic.Int64
 	lastSyncAt      atomic.Int64
 	hbWake          chan struct{}
+
+	// convDone remembers, per conversation, the newest text time that a sync
+	// has fully read. A sync that stops halfway (a slow phone, a dropped
+	// connection) then picks up where it left off instead of starting over.
+	convMu   sync.Mutex
+	convDone map[string]int64
+}
+
+func (r *runner) conversationDone(id string, lastMs int64) bool {
+	r.convMu.Lock()
+	defer r.convMu.Unlock()
+	done, ok := r.convDone[id]
+	return ok && lastMs <= done
+}
+
+func (r *runner) markConversationDone(id string, lastMs int64) {
+	r.convMu.Lock()
+	defer r.convMu.Unlock()
+	if r.convDone == nil {
+		r.convDone = map[string]int64{}
+	}
+	if lastMs > r.convDone[id] {
+		r.convDone[id] = lastMs
+	}
 }
 
 func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) error {
@@ -125,7 +154,7 @@ func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) er
 		switch {
 		case errors.Is(err, errNeedsPairing):
 			r.setState(stateNeedsPairing, "Google Messages unlinked this phone's bridge. Run texts-bridge pair on your computer.")
-			log.Error().Msg("Google Messages unlinked this bridge. Run texts-bridge pair on your computer to link it again.")
+			log.Error().Str("reason", strings.TrimPrefix(err.Error(), errNeedsPairing.Error()+": ")).Msg("Google Messages unlinked this bridge. Run texts-bridge pair on your computer to link it again.")
 			r.store.RemoveLocal()
 			r.waitForNewPairing(ctx, ss.PairingID, ss.SavedAt)
 		case errors.Is(err, errNewPairing):
@@ -300,11 +329,11 @@ func (r *runner) runSession(ctx context.Context, ad *libgm.AuthData, ss *sealedS
 		// Same as mautrix-gmessages: not fatal, Connect finds out for sure.
 		s.log.Warn().Err(err).Msg("Could not fetch the Google Messages config")
 	} else if ad.IsGoogleAccount() && s.client.Config.GetDeviceInfo().GetEmail() == "" {
-		return errNeedsPairing
+		return fmt.Errorf("%w: Google no longer accepts the sign-in saved at pairing (no account in the Messages config)", errNeedsPairing)
 	}
 	if err := s.client.Connect(sctx); err != nil {
 		if errors.Is(err, events.ErrRequestedEntityNotFound) || errors.Is(err, events.ErrInvalidCredentials) {
-			return errNeedsPairing
+			return fmt.Errorf("%w: connecting: %v", errNeedsPairing, err)
 		}
 		return fmt.Errorf("connecting: %w", err)
 	}
@@ -353,7 +382,7 @@ func (s *session) handleEvent(raw any) {
 	switch evt := raw.(type) {
 	case *events.ListenFatalError:
 		if errors.Is(evt.Error, events.ErrInvalidCredentials) || strings.Contains(evt.Error.Error(), "http 401") {
-			s.fail(errNeedsPairing)
+			s.fail(fmt.Errorf("%w: %v", errNeedsPairing, evt.Error))
 		} else {
 			s.fail(fmt.Errorf("connection lost: %w", evt.Error))
 		}
@@ -375,12 +404,14 @@ func (s *session) handleEvent(raw any) {
 		go s.hackyResetActive()
 	case *events.PingFailed:
 		if errors.Is(evt.Error, events.ErrRequestedEntityNotFound) {
-			s.fail(errNeedsPairing)
+			s.fail(fmt.Errorf("%w: ping: %v", errNeedsPairing, evt.Error))
 		} else if evt.ErrorCount > 3 {
 			s.fail(fmt.Errorf("pings keep failing: %w", evt.Error))
 		}
-	case *gmproto.RevokePairData, *events.GaiaLoggedOut:
-		s.fail(errNeedsPairing)
+	case *gmproto.RevokePairData:
+		s.fail(fmt.Errorf("%w: the phone removed this device from Device pairing", errNeedsPairing))
+	case *events.GaiaLoggedOut:
+		s.fail(fmt.Errorf("%w: Google signed this link out", errNeedsPairing))
 	case *events.AuthTokenRefreshed:
 		s.needsSave.Store(true)
 	case *events.NoDataReceived:
@@ -582,6 +613,7 @@ func (s *session) syncLoop(ctx context.Context) {
 	s.requestSyncAfter(10 * time.Second)
 	ticker := time.NewTicker(syncEvery)
 	defer ticker.Stop()
+	timeouts := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -593,7 +625,24 @@ func (s *session) syncLoop(ctx context.Context) {
 			// Nothing to fetch from a phone that is not answering; try again later.
 			continue
 		}
-		if _, err := s.sync(ctx); err != nil && ctx.Err() == nil {
+		_, err := s.sync(ctx)
+		switch {
+		case err == nil:
+			timeouts = 0
+		case ctx.Err() != nil:
+			return
+		case isTimeout(err):
+			timeouts++
+			if timeouts >= syncTimeoutsBeforeReconnect {
+				// The connection to Google is stuck. A fresh client gets a fresh one.
+				s.log.Warn().Err(err).Msg("Google keeps timing out; reconnecting")
+				s.fail(fmt.Errorf("sync timed out %d times in a row: %w", timeouts, err))
+				return
+			}
+			s.log.Warn().Err(err).Msg("Sync timed out; will retry")
+			s.requestSyncAfter(30 * time.Second)
+		default:
+			timeouts = 0
 			s.log.Warn().Err(err).Msg("Sync failed; will retry")
 			s.requestSyncAfter(time.Minute)
 		}
@@ -634,7 +683,7 @@ func (s *session) sync(ctx context.Context) (gap bool, err error) {
 				continue
 			}
 			lastMs := c.GetLastMessageTimestamp() / 1000
-			if lastMs < since {
+			if lastMs < since || s.r.conversationDone(c.GetConversationID(), lastMs) {
 				continue
 			}
 			if lastMs > lastData+60_000 {
@@ -644,6 +693,7 @@ func (s *session) sync(ctx context.Context) (gap bool, err error) {
 			if err != nil {
 				return gap, err
 			}
+			s.r.markConversationDone(c.GetConversationID(), lastMs)
 			queued += n
 		}
 	}
@@ -761,4 +811,20 @@ func shortErr(err error) string {
 		msg = msg[:160]
 	}
 	return msg
+}
+
+// isTimeout reports whether err is a network or request timeout, as opposed to
+// Google or the phone refusing something.
+func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "timeout")
 }

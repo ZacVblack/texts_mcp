@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
@@ -42,7 +48,7 @@ func TestParseCookies(t *testing.T) {
 	want := map[string]string{"SID": "s1", "HSID": "h1", "SSID": "ss1", "APISID": "a1", "SAPISID": "sa1", "OSID": "o1"}
 	header := "SID=s1; HSID=h1; SSID=ss1; APISID=a1; SAPISID=sa1; OSID=o1; NID=junk; __Secure-1PSIDTS=ts1"
 	inputs := map[string]string{
-		"bash": "curl 'https://messages.google.com/web/config' \\\n  -H 'accept: */*' \\\n  -b '" + header + "' \\\n  -H 'user-agent: x'",
+		"bash":        "curl 'https://messages.google.com/web/config' \\\n  -H 'accept: */*' \\\n  -b '" + header + "' \\\n  -H 'user-agent: x'",
 		"bash-header": "curl 'https://messages.google.com/web/config' \\\n  -H 'cookie: " + header + "'",
 		"cmd":         "curl ^\"https://messages.google.com/web/config^\" ^\n  -b ^\"" + strings.ReplaceAll(header, "%", "%%") + "^\" ^\n  -H ^\"accept: */*^\"",
 		"powershell":  `$session.Cookies.Add((New-Object System.Net.Cookie("SID", "s1", "/", ".google.com")))` + "\n" + `$session.Cookies.Add((New-Object System.Net.Cookie("HSID", "h1", "/", ".google.com")))` + "\n" + `$session.Cookies.Add((New-Object System.Net.Cookie("SSID", "ss1", "/", ".google.com")))` + "\n" + `$session.Cookies.Add((New-Object System.Net.Cookie("APISID", "a1", "/", ".google.com")))` + "\n" + `$session.Cookies.Add((New-Object System.Net.Cookie("SAPISID", "sa1", "/", ".google.com")))` + "\n" + `$session.Cookies.Add((New-Object System.Net.Cookie("OSID", "o1", "/", "messages.google.com")))`,
@@ -187,3 +193,87 @@ func TestNormalizeWorkerURL(t *testing.T) {
 }
 
 func testLogger() zerolog.Logger { return zerolog.Nop() }
+
+func TestFirefoxCurlAndBrowserDetection(t *testing.T) {
+	header := "SID=s1; HSID=h1; SSID=ss1; APISID=a1; SAPISID=sa1; OSID=o1"
+	firefox := "curl 'https://messages.google.com/web/config?c=1' --compressed -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0' -H 'Accept: */*' -H 'Cookie: " + header + "' -H 'Sec-Fetch-Mode: cors'"
+	cookies, err := parseCookieInput(firefox)
+	if err != nil || cookies["SID"] != "s1" || cookies["OSID"] != "o1" {
+		t.Fatalf("firefox curl: %v %v", cookies, err)
+	}
+	cases := map[string]string{
+		firefox: "",
+		"curl 'https://messages.google.com/web/config' -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'": "Chrome",
+		"curl ^\"https://messages.google.com/web/config^\" ^\n  -H ^\"user-agent: Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36 Edg/146.0.0.0^\"":      "Edge",
+		"SID=s1; HSID=h1": "",
+	}
+	for in, want := range cases {
+		if got := chromiumBrowser(in); got != want {
+			t.Errorf("chromiumBrowser(%.60q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNeedsPairingReasonWraps(t *testing.T) {
+	err := fmt.Errorf("%w: Google signed this link out", errNeedsPairing)
+	if !errors.Is(err, errNeedsPairing) {
+		t.Fatal("wrapped error lost errNeedsPairing")
+	}
+	if got := strings.TrimPrefix(err.Error(), errNeedsPairing.Error()+": "); got != "Google signed this link out" {
+		t.Fatalf("reason = %q", got)
+	}
+}
+
+func TestHTTPSettingsForPhones(t *testing.T) {
+	for _, c := range []*http.Client{httpSettings().Compile(), httpSettings().WithGlobalTimeout(30 * time.Minute).Compile()} {
+		tr, ok := c.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("transport is %T", c.Transport)
+		}
+		if tr.ResponseHeaderTimeout != responseHeaderTimeout {
+			t.Errorf("ResponseHeaderTimeout = %v", tr.ResponseHeaderTimeout)
+		}
+		if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout != h2PingAfterIdle || tr.HTTP2.PingTimeout != h2PingTimeout {
+			t.Errorf("HTTP2 health check not set: %+v", tr.HTTP2)
+		}
+		if !tr.ForceAttemptHTTP2 || tr.DialContext == nil {
+			t.Error("HTTP/2 or the custom dialer was lost")
+		}
+	}
+}
+
+func TestIsTimeout(t *testing.T) {
+	yes := []error{
+		context.DeadlineExceeded,
+		fmt.Errorf("fetching texts: %w", errors.New(`Post "https://x/SendMessage": http2: timeout awaiting response headers`)),
+		&net.DNSError{IsTimeout: true},
+	}
+	for _, e := range yes {
+		if !isTimeout(e) {
+			t.Errorf("isTimeout(%v) = false", e)
+		}
+	}
+	for _, e := range []error{nil, errors.New("401 unauthorized"), context.Canceled} {
+		if isTimeout(e) {
+			t.Errorf("isTimeout(%v) = true", e)
+		}
+	}
+}
+
+func TestConversationDoneResumes(t *testing.T) {
+	r := &runner{}
+	if r.conversationDone("a", 100) {
+		t.Fatal("unsynced conversation reported done")
+	}
+	r.markConversationDone("a", 100)
+	if !r.conversationDone("a", 100) || !r.conversationDone("a", 50) {
+		t.Fatal("synced conversation not skipped")
+	}
+	if r.conversationDone("a", 101) {
+		t.Fatal("conversation with a newer text was skipped")
+	}
+	r.markConversationDone("a", 40)
+	if !r.conversationDone("a", 100) {
+		t.Fatal("older mark overwrote newer one")
+	}
+}
