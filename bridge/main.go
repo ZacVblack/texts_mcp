@@ -1,5 +1,6 @@
 // texts-bridge links Google Messages (SMS, MMS and RCS) to a private
-// Cloudflare Worker that serves the texts to Claude as a read-only connector.
+// Cloudflare Worker that serves the texts to Claude as a connector, and sends
+// texts the user approved in Claude.
 package main
 
 import (

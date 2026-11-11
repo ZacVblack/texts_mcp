@@ -80,6 +80,11 @@ type runner struct {
 	// connection) then picks up where it left off instead of starting over.
 	convMu   sync.Mutex
 	convDone map[string]int64
+
+	// Sending approved texts (send.go).
+	sent   sendLedger
+	echoes echoWaiters
+	sims   simCards
 }
 
 func (r *runner) conversationDone(id string, lastMs int64) bool {
@@ -243,6 +248,7 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			LastSyncAtMs:   r.lastSyncAt.Load(),
 			BridgeVersion:  Version,
 			PendingUploads: r.queue.Pending(),
+			CanSend:        true,
 		}
 		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := r.wc.SendHeartbeat(hctx, hb); err != nil {
@@ -349,6 +355,7 @@ func (r *runner) runSession(ctx context.Context, ad *libgm.AuthData, ss *sealedS
 	go s.eventLoop(sctx)
 	go s.syncLoop(sctx)
 	go s.pairingLoop(sctx)
+	go s.outboxLoop(sctx)
 
 	select {
 	case <-sctx.Done():
@@ -422,7 +429,13 @@ func (s *session) handleEvent(raw any) {
 		go s.recoverStall()
 	case *gmproto.UserAlertEvent:
 		s.handleAlert(evt)
+	case *gmproto.Settings:
+		r.sims.set(evt.GetSIMCards())
 	case *gmproto.Conversation, *libgm.WrappedMessage:
+		if w, ok := raw.(*libgm.WrappedMessage); ok {
+			// A text Claude sent coming back from Google Messages, with its status.
+			r.echoes.deliver(w.Message)
+		}
 		s.lastDataAt.Store(time.Now().UnixMilli())
 		s.stallAttempts.Store(0)
 		select {

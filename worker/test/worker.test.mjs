@@ -150,7 +150,7 @@ test("bridge flow: session, heartbeat, ingest, MCP tools", async () => {
   assert.equal(r.status, 202);
   r = await mcp(env, "tools/list", {});
   assert.deepEqual(r.data.result.tools.map((t) => t.name).sort(),
-    ["get_conversation", "get_recent_texts", "list_conversations", "search_texts", "texts_status"]);
+    ["cancel_text", "get_conversation", "get_recent_texts", "list_conversations", "prepare_new_text", "prepare_text", "search_texts", "send_status", "send_text", "texts_status"]);
   r = await mcp(env, "nope/method", {});
   assert.equal(r.data.error.code, -32601);
   const getRes = await worker.fetch(new Request(BASE + "/mcp/" + (await deriveToken(PASS, "texts-mcp:mcp:v1"))), env, ctx);
