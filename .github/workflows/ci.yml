@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bridge/go.mod
+          cache-dependency-path: bridge/go.sum
+      - name: Vet and test
+        working-directory: bridge
+        run: |
+          go vet ./...
+          go test ./...
+      - name: Cross-compile
+        working-directory: bridge
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=android GOARCH=arm64 go build -o /dev/null .
+          GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null .
+          GOOS=windows GOARCH=amd64 go build -o /dev/null .
+
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test
+        working-directory: worker
+        run: node --test test/*.test.mjs

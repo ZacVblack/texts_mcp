@@ -1,0 +1,57 @@
+name: Release texts-bridge
+
+# Every change to the bridge on main publishes a new release, so the phone and
+# the computer can always download .../releases/latest/download/<file>.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bridge/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bridge/go.mod
+          cache-dependency-path: bridge/go.sum
+
+      - name: Test
+        working-directory: bridge
+        run: go test ./...
+
+      - name: Build
+        working-directory: bridge
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="1.0.${GITHUB_RUN_NUMBER}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p ../dist
+          build() {
+            GOOS=$1 GOARCH=$2 GOARM=${4:-} go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "../dist/$3" .
+          }
+          build android arm64 texts-bridge-android-arm64
+          build linux   arm   texts-bridge-linux-armv7 7
+          build linux   arm64 texts-bridge-linux-arm64
+          build linux   amd64 texts-bridge-linux-amd64
+          build windows amd64 texts-bridge-windows-amd64.exe
+          build darwin  arm64 texts-bridge-macos-arm64
+          cd ../dist && sha256sum * > SHA256SUMS.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" dist/* \
+            --title "texts-bridge $VERSION" \
+            --notes "Built from ${GITHUB_SHA}. Download texts-bridge-windows-amd64.exe for the computer; the phone installer downloads its file itself." \
+            --latest

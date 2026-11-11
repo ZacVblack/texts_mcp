@@ -1,0 +1,21 @@
+{
+  // Cloudflare Worker for texts-mcp. Deploy it with Workers & Pages > Import a repository.
+  // The D1 database is created automatically on the first deploy.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "texts-mcp",
+  "main": "worker/src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  "vars": {
+    // Times shown to Claude use this zone.
+    "TIMEZONE": "America/New_York",
+    // Texts older than this many days are deleted.
+    "RETENTION_DAYS": "30"
+  },
+  // Keep the PASSPHRASE secret set in the dashboard when redeploying.
+  "keep_vars": true,
+  "d1_databases": [
+    { "binding": "DB", "database_name": "texts-mcp" }
+  ]
+}
