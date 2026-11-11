@@ -81,12 +81,12 @@ Treat the connector address like a password: anyone with it can read your texts.
 
 | Tool | What it does |
 | --- | --- |
-| `get_recent_texts` | Texts from the last N minutes, grouped by conversation, including late arrivals, with the few texts just before each for background |
+| `get_recent_texts` | Texts from the last N minutes, grouped by conversation, including late arrivals, with the few texts just before each for background, a one-line summary, and which chats are waiting on a reply from you |
 | `list_conversations` | Recent conversations with unread state and last text |
 | `get_conversation` | One conversation by name, number or id |
 | `search_texts` | Find texts containing words, each with the texts just before and after it |
 | `texts_status` | Whether the phone link is working |
-| `prepare_text` | Preview a text into an existing conversation: who it goes to and the exact words. Sends nothing. |
+| `prepare_text` | Preview a text into an existing conversation: a ready-to-show draft with who it goes to and the exact words, plus the last few texts. Sends nothing. |
 | `prepare_new_text` | Preview a text that starts a new conversation with a number. Refuses if you already have a chat with that number. |
 | `send_text` | Send a previewed text after you approve it |
 | `send_status` | Whether a sent text went out, was delivered or read |

@@ -141,6 +141,8 @@ test("prepare_text needs exactly one existing conversation", async () => {
   assert.deepEqual(ok.preview.people, ["Alex Rivera (+1 734-555-0101)"]);
   assert.equal(ok.last_texts_in_conversation[0].text, "See you at 6?");
   assert.match(ok.token, /^tx_[0-9a-f]{32}$/);
+  // A ready-to-show draft: who it goes to, how, and the exact words.
+  assert.equal(ok.show_user, "To: Alex Rivera (+1 734-555-0101) (RCS chat)\n\nOn my way");
 });
 
 test("a group chat is sent to as the group", async () => {
@@ -181,13 +183,13 @@ test("full send: queue, phone claims once, reports, status follows the phone", a
   assert.equal((await bridge(env, "POST", "/outbox/result", { id: s.send_id, state: "accepted" })).data.updated, false);
   let st = await tool(env, "send_status", { send_id: s.send_id });
   assert.equal(st.state, "sent");
-  assert.equal(st.summary, "Sent.");
+  assert.equal(st.summary, "Sent to Alex Rivera.");
 
   await bridge(env, "POST", "/ingest", {
     messages: [{ id: "m-out", conversation_id: "c-alex", ts: Date.now(), from_me: true, text: "On my way", status: "delivered" }],
   });
   st = await tool(env, "send_status", { send_id: s.send_id });
-  assert.equal(st.summary, "Sent and delivered.");
+  assert.equal(st.summary, "Sent to Alex Rivera and delivered.");
 });
 
 test("any change after the preview is refused and voids it", async () => {
@@ -379,6 +381,22 @@ test("read tools bring the surrounding texts for background, and say to share th
   recent = await tool(env, "get_recent_texts", { minutes: 10, context: 0 });
   assert.equal(recent.conversations.find((c) => c.conversation_id === "c-sam").earlier, undefined);
   assert.ok(!JSON.stringify(recent).includes("first_ts"));
+
+  // A one-line summary, and who is waiting on a reply.
+  recent = await tool(env, "get_recent_texts", { minutes: 10 });
+  assert.match(recent.summary, /^3 texts in 2 conversations since .*; 1 waiting on a reply from you\.$/);
+  assert.equal(recent.conversations.find((c) => c.conversation_id === "c-alex").waiting_on_you, true);
+  assert.equal(recent.conversations.find((c) => c.conversation_id === "c-sam").waiting_on_you, undefined);
+  assert.match((await tool(env, "get_recent_texts", { minutes: 1, since: new Date(NOW + 3600000).toISOString() })).summary, /^No texts since/);
+
+  // A number with no saved name reads cleanly.
+  await bridge(env, "POST", "/ingest", {
+    conversations: [{ id: "c-x", is_group: false, protocol: "sms", last_message_at_ms: NOW - 1000, participants: [{ id: "me", is_me: true }, { id: "x", number: "+17345559999" }] }],
+    messages: [{ id: "y1", conversation_id: "c-x", ts: NOW - 1000, sender_number: "+17345559999", text: "Who is this?" }],
+  });
+  recent = await tool(env, "get_recent_texts", { minutes: 10, contact: "9999" });
+  assert.equal(recent.conversations[0].title, "+1 734-555-9999");
+  assert.equal(recent.conversations[0].texts[0].from, "+1 734-555-9999");
 
   // Search hits carry the texts around them.
   let found = await tool(env, "search_texts", { query: "bus at 7" });
