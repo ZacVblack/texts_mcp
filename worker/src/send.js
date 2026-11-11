@@ -26,6 +26,8 @@ import {
   textOut,
   tz,
   digits,
+  prettyNumber,
+  personWithNumber,
 } from "./mcp.js";
 
 export const PREVIEW_TTL_MS = 10 * 60 * 1000;
@@ -228,8 +230,7 @@ export function normalizeNumber(v) {
 }
 
 export function displayNumber(e164) {
-  const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164 || "");
-  return m ? `+1 (${m[1]}) ${m[2]}-${m[3]}` : e164 || "";
+  return prettyNumber(e164);
 }
 
 function sameNumber(a, b) {
@@ -241,7 +242,12 @@ function sameNumber(a, b) {
 }
 
 function peopleList(participants) {
-  return others(participants).map((p) => (p.name && p.number ? `${p.name} (${p.number})` : p.name || p.number || "Unknown"));
+  return others(participants).map(personWithNumber);
+}
+
+// showUser is the draft exactly as the user should see it before saying yes.
+function showUser(to, via, text, extra) {
+  return `To: ${to}${via ? ` (${via})` : ""}${extra ? `\n${extra}` : ""}\n\n${text}`;
 }
 
 async function requireSendCapable(ctx) {
@@ -358,20 +364,23 @@ async function prepareText(args, ctx) {
   const token = await insertPreview(db, now, { conversation_id: conv.id, title, people, text });
 
   const recent = (
-    await db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC LIMIT 3").bind(conv.id).all()
+    await db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC LIMIT 5").bind(conv.id).all()
   ).results
     .reverse()
     .map((m) => textOut(m, zone, !!conv.is_group));
 
+  const via = conv.protocol === "rcs" ? "RCS chat" : "SMS/MMS";
+  const toLine = conv.is_group ? `${title} (group: ${people.join(", ")})` : people.length === 1 ? people[0] : title;
   const out = {
     ready: true,
+    show_user: showUser(toLine, via, text),
     preview: {
       to: title,
       conversation_id: conv.id,
       new_conversation: false,
       group_chat: !!conv.is_group,
       people,
-      via: conv.protocol === "rcs" ? "RCS chat" : "SMS/MMS",
+      via,
       text,
       characters: text.length,
     },
@@ -379,7 +388,8 @@ async function prepareText(args, ctx) {
     token,
     token_expires: formatLocal(now + PREVIEW_TTL_MS, zone),
     next_step:
-      "Show the user who it goes to and the exact text. Call send_text with this token, conversation_id and text only after they explicitly approve it.",
+      "Show the user show_user (who it goes to and the exact text), with the last few texts for background. " +
+      "Call send_text with this token, conversation_id and text only after they explicitly approve it.",
   };
   if (conv.is_group) out.preview.note = `One text to the whole group (${people.length} people), sent in the group chat.`;
   if (conv.folder === "archived") out.preview.archived = true;
@@ -418,6 +428,7 @@ async function prepareNewText(args, ctx) {
   const token = await insertPreview(db, now, { new_number: number, title: shown, people: [shown], text });
   const out = {
     ready: true,
+    show_user: showUser(shown, "", text, "This starts a NEW conversation."),
     preview: {
       to: shown,
       number,
@@ -429,7 +440,8 @@ async function prepareNewText(args, ctx) {
     token,
     token_expires: formatLocal(now + PREVIEW_TTL_MS, zone),
     next_step:
-      "Show the user that this starts a new conversation, the number and the exact text. Call send_text with this token, number and text only after they explicitly approve it.",
+      "Show the user show_user (that this starts a new conversation, the number and the exact text). " +
+      "Call send_text with this token, number and text only after they explicitly approve it.",
   };
   if (!link.ok) out.phone_link_warning = link.summary + " A send waits up to 5 minutes for the phone, then is dropped.";
   return out;
@@ -556,7 +568,7 @@ async function describeSend(row, ctx) {
       out.summary = "Handed to Google Messages on the phone; waiting for the sent confirmation.";
       break;
     case "sent":
-      out.summary = "Sent.";
+      out.summary = `Sent to ${row.title}.`;
       break;
     case "failed":
       out.summary = "Not sent: " + (row.detail || "the phone reported a failure") + ".";
@@ -573,10 +585,10 @@ async function describeSend(row, ctx) {
     default:
       out.summary = row.state;
   }
-  if (out.phone_status === "delivered") out.summary = "Sent and delivered.";
-  else if (out.phone_status === "read") out.summary = "Sent, delivered and read.";
+  if (out.phone_status === "delivered") out.summary = `Sent to ${row.title} and delivered.`;
+  else if (out.phone_status === "read") out.summary = `Sent to ${row.title}, delivered and read.`;
   else if (out.phone_status === "failed") out.summary = "Not sent: the phone shows it as failed.";
-  else if (out.phone_status === "sent" && row.state !== "failed") out.summary = "Sent.";
+  else if (out.phone_status === "sent" && row.state !== "failed") out.summary = `Sent to ${row.title}.`;
   return out;
 }
 
