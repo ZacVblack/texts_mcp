@@ -68,7 +68,14 @@ RC
 fi
 
 # Start it now too, without waiting for a reboot.
+# Stop the old copy first and wait for it to exit, or the start script would
+# see it still running and leave the old version in place.
 pkill -f "texts-bridge run" >/dev/null 2>&1 || true
+for _ in $(seq 1 20); do
+  pgrep -f "texts-bridge run" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+pkill -9 -f "texts-bridge run" >/dev/null 2>&1 || true
 "$HOME/.termux/boot/start-texts-bridge"
 
 echo
