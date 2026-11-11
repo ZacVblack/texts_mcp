@@ -57,7 +57,7 @@ Make up a passphrase of at least 16 characters and save it in your password mana
    ```
 3. Type the same Worker address and passphrase.
 4. In Android settings, set **Apps** > **Termux** > **Battery** to **Unrestricted**.
-5. Open the **Termux:Boot** app once, so it starts texts-bridge after every reboot.
+5. Open the **Termux:Boot** app once, so it starts texts-bridge after every reboot. If Android refuses to install Termux:Boot (Play Protect blocks it as "built for an older version of Android" and offers no **Install anyway**), skip it: texts-bridge also starts whenever you open Termux, so just open Termux once after the phone restarts.
 
 ### 5. Add it to Claude
 

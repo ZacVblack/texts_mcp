@@ -51,6 +51,17 @@ nohup sh -c '
 BOOT
 chmod 755 "$HOME/.termux/boot/start-texts-bridge"
 
+# Also start it whenever Termux is opened, so a phone without Termux:Boot
+# only needs Termux opened once after a restart.
+touch "$HOME/.bashrc"
+if ! grep -q "start-texts-bridge" "$HOME/.bashrc"; then
+  cat >> "$HOME/.bashrc" <<'RC'
+
+# texts-bridge: make sure it is running whenever Termux opens
+[ -x "$HOME/.termux/boot/start-texts-bridge" ] && "$HOME/.termux/boot/start-texts-bridge"
+RC
+fi
+
 # Start it now too, without waiting for a reboot.
 pkill -f "texts-bridge run" >/dev/null 2>&1 || true
 "$HOME/.termux/boot/start-texts-bridge"
@@ -62,5 +73,6 @@ echo
 echo "Two phone settings keep it running:"
 echo "  1. Settings > Apps > Termux > Battery: Unrestricted (or 'Don't optimize')."
 echo "  2. Open the Termux:Boot app once, so Android lets it start at boot."
+echo "     No Termux:Boot? Then just open Termux once after the phone restarts."
 echo
 echo "To update later, run this installer again."
