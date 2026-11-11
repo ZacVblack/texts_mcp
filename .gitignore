@@ -1,0 +1,7 @@
+bridge/bridge
+bridge/texts-bridge*
+dist/
+node_modules/
+.wrangler/
+.dev.vars
+*.exe
