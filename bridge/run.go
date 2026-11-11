@@ -125,7 +125,7 @@ func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) er
 		switch {
 		case errors.Is(err, errNeedsPairing):
 			r.setState(stateNeedsPairing, "Google Messages unlinked this phone's bridge. Run texts-bridge pair on your computer.")
-			log.Error().Msg("Google Messages unlinked this bridge. Run texts-bridge pair on your computer to link it again.")
+			log.Error().Str("reason", strings.TrimPrefix(err.Error(), errNeedsPairing.Error()+": ")).Msg("Google Messages unlinked this bridge. Run texts-bridge pair on your computer to link it again.")
 			r.store.RemoveLocal()
 			r.waitForNewPairing(ctx, ss.PairingID, ss.SavedAt)
 		case errors.Is(err, errNewPairing):
@@ -300,11 +300,11 @@ func (r *runner) runSession(ctx context.Context, ad *libgm.AuthData, ss *sealedS
 		// Same as mautrix-gmessages: not fatal, Connect finds out for sure.
 		s.log.Warn().Err(err).Msg("Could not fetch the Google Messages config")
 	} else if ad.IsGoogleAccount() && s.client.Config.GetDeviceInfo().GetEmail() == "" {
-		return errNeedsPairing
+		return fmt.Errorf("%w: Google no longer accepts the sign-in saved at pairing (no account in the Messages config)", errNeedsPairing)
 	}
 	if err := s.client.Connect(sctx); err != nil {
 		if errors.Is(err, events.ErrRequestedEntityNotFound) || errors.Is(err, events.ErrInvalidCredentials) {
-			return errNeedsPairing
+			return fmt.Errorf("%w: connecting: %v", errNeedsPairing, err)
 		}
 		return fmt.Errorf("connecting: %w", err)
 	}
@@ -353,7 +353,7 @@ func (s *session) handleEvent(raw any) {
 	switch evt := raw.(type) {
 	case *events.ListenFatalError:
 		if errors.Is(evt.Error, events.ErrInvalidCredentials) || strings.Contains(evt.Error.Error(), "http 401") {
-			s.fail(errNeedsPairing)
+			s.fail(fmt.Errorf("%w: %v", errNeedsPairing, evt.Error))
 		} else {
 			s.fail(fmt.Errorf("connection lost: %w", evt.Error))
 		}
@@ -375,12 +375,14 @@ func (s *session) handleEvent(raw any) {
 		go s.hackyResetActive()
 	case *events.PingFailed:
 		if errors.Is(evt.Error, events.ErrRequestedEntityNotFound) {
-			s.fail(errNeedsPairing)
+			s.fail(fmt.Errorf("%w: ping: %v", errNeedsPairing, evt.Error))
 		} else if evt.ErrorCount > 3 {
 			s.fail(fmt.Errorf("pings keep failing: %w", evt.Error))
 		}
-	case *gmproto.RevokePairData, *events.GaiaLoggedOut:
-		s.fail(errNeedsPairing)
+	case *gmproto.RevokePairData:
+		s.fail(fmt.Errorf("%w: the phone removed this device from Device pairing", errNeedsPairing))
+	case *events.GaiaLoggedOut:
+		s.fail(fmt.Errorf("%w: Google signed this link out", errNeedsPairing))
 	case *events.AuthTokenRefreshed:
 		s.needsSave.Store(true)
 	case *events.NoDataReceived:

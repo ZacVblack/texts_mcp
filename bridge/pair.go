@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -30,17 +31,29 @@ func cmdPair(ctx context.Context, path string, log zerolog.Logger, debug bool) e
 
 	fmt.Println("Link Google Messages")
 	fmt.Println()
-	fmt.Println("1. Open a private window (Ctrl+Shift+N in Chrome or Edge).")
+	fmt.Println("Use Firefox for this. Chrome ties its Google sign-in to the computer, so a")
+	fmt.Println("sign-in copied out of Chrome stops working within hours and the link drops.")
+	fmt.Println()
+	fmt.Println("1. In Firefox, open a private window (Ctrl+Shift+P).")
 	fmt.Println("2. Open this address and sign in with the Google account your phone's Google Messages uses:")
 	fmt.Println("   " + signInURL)
 	fmt.Println("3. Press F12, open the Network tab, then press F5 to reload the page.")
-	fmt.Println("4. Right-click the request named config, then Copy > Copy as cURL (bash).")
+	fmt.Println("4. Right-click the request named config, then Copy Value > Copy as cURL (POSIX).")
 	fmt.Println("5. Come back here and press Enter. (If that doesn't work, paste it here and press Enter twice.)")
 	fmt.Println()
 
-	cookies, err := readCookies()
+	cookies, raw, err := readCookies()
 	if err != nil {
 		return err
+	}
+	if browser := chromiumBrowser(raw); browser != "" {
+		fmt.Println()
+		fmt.Printf("That was copied from %s. %s ties its Google sign-in to this computer, so\n", browser, browser)
+		fmt.Println("the link would most likely stop working within hours. Use a Firefox private window instead.")
+		fmt.Print("Link with it anyway? Type yes to continue, or press Enter to stop: ")
+		if ans := strings.ToLower(strings.TrimSpace(readAnswer(os.Stdin))); ans != "yes" && ans != "y" {
+			return errors.New("stopped. Run pair again and copy the request from a Firefox private window")
+		}
 	}
 	fmt.Println("Got the cookies. Asking your phone to confirm...")
 
@@ -107,6 +120,8 @@ func cmdPair(ctx context.Context, path string, log zerolog.Logger, debug bool) e
 	fmt.Println()
 	fmt.Println("Linked. The pairing is saved, encrypted, in your Worker.")
 	fmt.Println("Close the private window now. Do not sign out in it first: signing out would undo the link.")
+	fmt.Println("Keep using this Google account normally; only signing out of it everywhere, or changing")
+	fmt.Println("its password, undoes the link.")
 	fmt.Println()
 	fmt.Println("If texts-bridge is already running on your phone, it picks up the new link within 2 minutes.")
 	fmt.Println()
@@ -117,24 +132,67 @@ func cmdPair(ctx context.Context, path string, log zerolog.Logger, debug bool) e
 
 // readCookies takes the copied request from the clipboard when it can, since
 // pasting thousands of characters into a terminal is unreliable on Windows.
-func readCookies() (map[string]string, error) {
+// readCookies returns the cookies and the raw text they came from.
+func readCookies() (map[string]string, string, error) {
 	input, err := readPastedBlock(os.Stdin)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if strings.TrimSpace(input) != "" {
-		return parseCookieInput(input)
-	}
-	clip, cerr := readClipboard()
-	if cerr != nil || strings.TrimSpace(clip) == "" {
-		fmt.Println("Could not read the clipboard. Paste the copied request here, then press Enter twice:")
-		input, err = readPastedBlock(os.Stdin)
-		if err != nil {
-			return nil, err
+	if strings.TrimSpace(input) == "" {
+		clip, cerr := readClipboard()
+		if cerr != nil || strings.TrimSpace(clip) == "" {
+			fmt.Println("Could not read the clipboard. Paste the copied request here, then press Enter twice:")
+			if input, err = readPastedBlock(os.Stdin); err != nil {
+				return nil, "", err
+			}
+		} else {
+			input = clip
 		}
-		return parseCookieInput(input)
 	}
-	return parseCookieInput(clip)
+	cookies, err := parseCookieInput(input)
+	return cookies, input, err
+}
+
+// chromiumBrowser names the Chromium-based browser a copied request came from,
+// judged by its User-Agent, or returns "" for Firefox or when it can't tell.
+func chromiumBrowser(raw string) string {
+	m := reUserAgent.FindStringSubmatch(raw)
+	if m == nil {
+		return ""
+	}
+	ua := m[1]
+	switch {
+	case strings.Contains(ua, "Firefox/"):
+		return ""
+	case strings.Contains(ua, "Edg/"):
+		return "Edge"
+	case strings.Contains(ua, "OPR/"):
+		return "Opera"
+	case strings.Contains(ua, "Chrome/"):
+		return "Chrome"
+	}
+	return ""
+}
+
+var reUserAgent = regexp.MustCompile(`(?i)user-agent:\s*([^'"\r\n^]+)`)
+
+// readAnswer reads one line a byte at a time, so nothing after it is buffered away.
+func readAnswer(f *os.File) string {
+	var b strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := f.Read(buf)
+		if n == 1 {
+			if buf[0] == '\n' {
+				break
+			}
+			b.WriteByte(buf[0])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return b.String()
 }
 
 func readClipboard() (string, error) {

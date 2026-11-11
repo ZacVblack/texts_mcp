@@ -36,14 +36,16 @@ Make up a passphrase of at least 16 characters and save it in your password mana
 
 ### 3. Link Google Messages (computer)
 
+Use **Firefox** for this step. Chrome (and other Chromium browsers) tie their Google sign-in to the computer, so a sign-in copied out of them stops working within hours and the link drops. texts-bridge warns you if you paste a request copied from one of them.
+
 1. On the phone, open Google Messages, tap your profile picture, and make sure it's signed in to your Google account (**Messages settings** > **Google account**, or **Device pairing**).
 2. On the computer, download **texts-bridge-windows-amd64.exe** from this repo's [latest release](../../releases/latest).
 3. Double-click it. If Windows says it protected your PC, press **More info** > **Run anyway**.
 4. Type the Worker address, then your passphrase (typing is hidden).
 5. Follow the steps it shows:
-   - Open a private window (**Ctrl+Shift+N**) and the Google sign-in address it prints. Sign in with the same Google account as the phone.
+   - In Firefox, open a private window (**Ctrl+Shift+P**) and the Google sign-in address it prints. Sign in with the same Google account as the phone.
    - Press **F12**, open the **Network** tab, press **F5**.
-   - Right-click the request named **config**, then **Copy** > **Copy as cURL (bash)**.
+   - Right-click the request named **config**, then **Copy Value** > **Copy as cURL (POSIX)**.
    - Go back to texts-bridge and press **Enter**. It reads what you copied.
 6. Your phone shows a few emoji. Tap the one texts-bridge shows.
 7. It says **Linked** and prints your **connector address**. Close the private window without signing out.
@@ -69,7 +71,7 @@ Treat the connector address like a password: anyone with it can read your texts.
 
 - **Phone off or no signal:** texts catch up when it's back. Claude's tools say when the phone last checked in.
 - **Opening Messages for web in a browser:** texts-bridge takes the link back within a few minutes, so use the phone app instead.
-- **"Run texts-bridge pair":** Google unlinked it (for example after a password change). Double-click the .exe on the computer again. The phone picks up the new link by itself within 2 minutes.
+- **"Run texts-bridge pair":** Google unlinked it (for example after a password change, signing out, or a sign-in copied from Chrome). The log line says which. Double-click the .exe on the computer again and link from a Firefox private window. The phone picks up the new link by itself within 2 minutes.
 - **Check it's alive:** in Termux, `tail -f ~/.texts-mcp/bridge.log`. Or ask Claude for the texts link status.
 - **Update:** run the install command in Termux again, and download the newest .exe.
 - **Change the passphrase:** change the `PASSPHRASE` secret, run `texts-bridge setup` on both devices, then pair again. The connector address changes too.
