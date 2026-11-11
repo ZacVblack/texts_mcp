@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,9 +15,30 @@ import (
 	"go.mau.fi/util/exhttp"
 )
 
+// httpSettings is what libgm uses to talk to Google. A phone on mobile data is
+// slower than a server and changes networks often, so it waits longer for an
+// answer than the server defaults, and checks the HTTP/2 connection with pings
+// so that a connection the network dropped is closed instead of reused.
 func httpSettings() exhttp.ClientSettings {
-	return exhttp.SensibleClientSettings.WithDial(newDialer().DialContext)
+	cs := exhttp.SensibleClientSettings.
+		WithResponseHeaderTimeout(responseHeaderTimeout).
+		WithDial(newDialer().DialContext)
+	cs.TransportOverride = func(cs exhttp.ClientSettings) http.RoundTripper {
+		t := cs.Configure(&http.Transport{})
+		t.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout: h2PingAfterIdle,
+			PingTimeout:     h2PingTimeout,
+		}
+		return t
+	}
+	return cs
 }
+
+const (
+	responseHeaderTimeout = 45 * time.Second
+	h2PingAfterIdle       = 20 * time.Second
+	h2PingTimeout         = 10 * time.Second
+)
 
 // sessionStore keeps the encrypted pairing in two places: a local file on this
 // device and the Worker. The newest copy wins when loading.

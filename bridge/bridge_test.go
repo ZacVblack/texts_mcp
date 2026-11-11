@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
@@ -217,5 +221,59 @@ func TestNeedsPairingReasonWraps(t *testing.T) {
 	}
 	if got := strings.TrimPrefix(err.Error(), errNeedsPairing.Error()+": "); got != "Google signed this link out" {
 		t.Fatalf("reason = %q", got)
+	}
+}
+
+func TestHTTPSettingsForPhones(t *testing.T) {
+	for _, c := range []*http.Client{httpSettings().Compile(), httpSettings().WithGlobalTimeout(30 * time.Minute).Compile()} {
+		tr, ok := c.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("transport is %T", c.Transport)
+		}
+		if tr.ResponseHeaderTimeout != responseHeaderTimeout {
+			t.Errorf("ResponseHeaderTimeout = %v", tr.ResponseHeaderTimeout)
+		}
+		if tr.HTTP2 == nil || tr.HTTP2.SendPingTimeout != h2PingAfterIdle || tr.HTTP2.PingTimeout != h2PingTimeout {
+			t.Errorf("HTTP2 health check not set: %+v", tr.HTTP2)
+		}
+		if !tr.ForceAttemptHTTP2 || tr.DialContext == nil {
+			t.Error("HTTP/2 or the custom dialer was lost")
+		}
+	}
+}
+
+func TestIsTimeout(t *testing.T) {
+	yes := []error{
+		context.DeadlineExceeded,
+		fmt.Errorf("fetching texts: %w", errors.New(`Post "https://x/SendMessage": http2: timeout awaiting response headers`)),
+		&net.DNSError{IsTimeout: true},
+	}
+	for _, e := range yes {
+		if !isTimeout(e) {
+			t.Errorf("isTimeout(%v) = false", e)
+		}
+	}
+	for _, e := range []error{nil, errors.New("401 unauthorized"), context.Canceled} {
+		if isTimeout(e) {
+			t.Errorf("isTimeout(%v) = true", e)
+		}
+	}
+}
+
+func TestConversationDoneResumes(t *testing.T) {
+	r := &runner{}
+	if r.conversationDone("a", 100) {
+		t.Fatal("unsynced conversation reported done")
+	}
+	r.markConversationDone("a", 100)
+	if !r.conversationDone("a", 100) || !r.conversationDone("a", 50) {
+		t.Fatal("synced conversation not skipped")
+	}
+	if r.conversationDone("a", 101) {
+		t.Fatal("conversation with a newer text was skipped")
+	}
+	r.markConversationDone("a", 40)
+	if !r.conversationDone("a", 100) {
+		t.Fatal("older mark overwrote newer one")
 	}
 }
