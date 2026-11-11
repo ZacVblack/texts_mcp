@@ -27,6 +27,14 @@ jobs:
           GOOS=android GOARCH=arm64 go build -o /dev/null .
           GOOS=linux GOARCH=arm GOARM=7 go build -o /dev/null .
           GOOS=windows GOARCH=amd64 go build -o /dev/null .
+      - name: Build for Android with the phone's resolver (cgo)
+        working-directory: bridge
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          CC_ANDROID="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          test -x "$CC_ANDROID" || { echo "Android NDK not found at '$NDK'"; exit 1; }
+          CGO_ENABLED=1 CC="$CC_ANDROID" GOOS=android GOARCH=arm64 go build -o /tmp/tb-android .
+          readelf -l /tmp/tb-android | grep "/system/bin/linker64"
 
   worker:
     runs-on: ubuntu-latest

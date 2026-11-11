@@ -28,7 +28,18 @@ apt-get "${APT_OPTS[@]}" install curl ca-certificates procps
 echo "Downloading texts-bridge..."
 curl -fL --retry 3 -o "$BIN.new" "https://github.com/$REPO/releases/latest/download/$ASSET"
 chmod 755 "$BIN.new"
-mv -f "$BIN.new" "$BIN"
+# Only replace a working copy with one that runs on this phone.
+if ! "$BIN.new" version >/dev/null 2>&1; then
+  rm -f "$BIN.new"
+  if [ -x "$BIN" ]; then
+    echo "The new texts-bridge doesn't run on this phone, so the current one stays installed."
+  else
+    echo "The downloaded texts-bridge doesn't run on this phone."
+    exit 1
+  fi
+else
+  mv -f "$BIN.new" "$BIN"
+fi
 echo "Installed $("$BIN" version)."
 echo
 

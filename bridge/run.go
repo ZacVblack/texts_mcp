@@ -29,9 +29,13 @@ const (
 )
 
 const (
-	firstSyncDays      = 7
-	syncEvery          = 20 * time.Minute
-	heartbeatEvery     = 5 * time.Minute
+	firstSyncDays  = 7
+	syncEvery      = 20 * time.Minute
+	heartbeatEvery = 5 * time.Minute
+
+	// The longest wait between tries to reach Google or the Worker. Kept short
+	// so the bridge is back within a minute after airplane mode or a dead zone.
+	maxRetryWait       = time.Minute
 	pairingCheckEvery  = 2 * time.Minute
 	sessionSaveEvery   = 3 * time.Hour
 	syncConversations  = 75
@@ -139,7 +143,7 @@ func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) er
 			r.setState(stateError, "Cannot reach the Worker: "+shortErr(err))
 			log.Warn().Err(err).Dur("retry_in", backoff).Msg("Could not load the pairing")
 			sleepCtx(ctx, backoff)
-			backoff = min(backoff*2, 5*time.Minute)
+			backoff = min(backoff*2, maxRetryWait)
 			continue
 		}
 
@@ -164,7 +168,7 @@ func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) er
 			r.setState(stateReconnecting, shortErr(err))
 			log.Warn().Err(err).Dur("retry_in", backoff).Msg("Disconnected from Google Messages")
 			sleepCtx(ctx, backoff)
-			backoff = min(backoff*2, 5*time.Minute)
+			backoff = min(backoff*2, maxRetryWait)
 		}
 	}
 	// Push out anything left before exiting.
