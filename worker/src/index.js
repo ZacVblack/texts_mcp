@@ -132,6 +132,19 @@ export async function kvGet(db, k) {
   return row ? { value: row.v, updatedAt: row.updated_at } : null;
 }
 
+// The phone talks to the Worker more often than it posts a heartbeat: it long-polls
+// the outbox about every 25 seconds, reports send results and uploads texts. Each of
+// those is fresh proof the phone is reachable, so it moves "last phone contact"
+// forward without touching what the last heartbeat said. Writes at most once a
+// TOUCH_EVERY_MS so the outbox poll doesn't cost a D1 write each time.
+export const TOUCH_EVERY_MS = 30 * 1000;
+export async function touchPhoneContact(db, now = Date.now()) {
+  await db
+    .prepare("UPDATE kv SET updated_at = ? WHERE k = 'heartbeat' AND updated_at < ?")
+    .bind(now, now - TOUCH_EVERY_MS)
+    .run();
+}
+
 async function kvPut(db, k, v) {
   await db
     .prepare("INSERT INTO kv (k, v, updated_at) VALUES (?, ?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at")
@@ -223,16 +236,19 @@ async function handleBridge(request, env, ctx, sub) {
     }
 
     if (sub === "/outbox" && request.method === "GET") {
+      await touchPhoneContact(db);
       return json(await bridgeOutboxNext(env, new URL(request.url)));
     }
 
     if (sub === "/outbox/result" && request.method === "POST") {
       const b = await readJson(request);
+      await touchPhoneContact(db);
       return json(await bridgeOutboxResult(env, b || {}));
     }
 
     if (sub === "/ingest" && request.method === "POST") {
       const b = await readJson(request);
+      await touchPhoneContact(db);
       const result = await ingest(db, b, Date.now());
       ctx && ctx.waitUntil && ctx.waitUntil(prune(env).catch((e) => console.error("prune failed", e)));
       return json({ ok: true, ...result });
