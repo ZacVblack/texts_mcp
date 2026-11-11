@@ -16,9 +16,14 @@ case "$(uname -m)" in
   *) echo "This phone's processor ($(uname -m)) is not supported." >&2; exit 1 ;;
 esac
 
-echo "Installing the tools texts-bridge needs..."
-pkg update -y >/dev/null 2>&1 || true
-pkg install -y curl ca-certificates procps >/dev/null
+echo "Updating Termux and installing the tools texts-bridge needs."
+echo "The first time, this can take a few minutes."
+# Never stop to ask about changed config files; keep the current ones.
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS=(-q -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+apt-get -q update || true
+apt-get "${APT_OPTS[@]}" full-upgrade || true
+apt-get "${APT_OPTS[@]}" install curl ca-certificates procps
 
 echo "Downloading texts-bridge..."
 curl -fL --retry 3 -o "$BIN.new" "https://github.com/$REPO/releases/latest/download/$ASSET"
@@ -51,6 +56,17 @@ nohup sh -c '
 BOOT
 chmod 755 "$HOME/.termux/boot/start-texts-bridge"
 
+# Also start it whenever Termux is opened, so a phone without Termux:Boot
+# only needs Termux opened once after a restart.
+touch "$HOME/.bashrc"
+if ! grep -q "start-texts-bridge" "$HOME/.bashrc"; then
+  cat >> "$HOME/.bashrc" <<'RC'
+
+# texts-bridge: make sure it is running whenever Termux opens
+[ -x "$HOME/.termux/boot/start-texts-bridge" ] && "$HOME/.termux/boot/start-texts-bridge"
+RC
+fi
+
 # Start it now too, without waiting for a reboot.
 pkill -f "texts-bridge run" >/dev/null 2>&1 || true
 "$HOME/.termux/boot/start-texts-bridge"
@@ -62,5 +78,6 @@ echo
 echo "Two phone settings keep it running:"
 echo "  1. Settings > Apps > Termux > Battery: Unrestricted (or 'Don't optimize')."
 echo "  2. Open the Termux:Boot app once, so Android lets it start at boot."
+echo "     No Termux:Boot? Then just open Termux once after the phone restarts."
 echo
 echo "To update later, run this installer again."
