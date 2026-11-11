@@ -345,3 +345,47 @@ test("phone contact without any heartbeat yet creates nothing", async () => {
   await bridge(env, "GET", "/outbox?wait=0");
   assert.equal(await env.DB.prepare("SELECT v FROM kv WHERE k = 'heartbeat'").first(), null);
 });
+
+test("read tools bring the surrounding texts for background, and say to share them", async () => {
+  const env = await setup();
+  // Older than a day, so they are not counted as late arrivals in the window.
+  const t = (min) => NOW - min * 60000;
+  await bridge(env, "POST", "/ingest", {
+    messages: [
+      { id: "x1", conversation_id: "c-sam", ts: t(1600), sender_name: "Sam Lee", text: "Are you coming to the meet?" },
+      { id: "x2", conversation_id: "c-sam", ts: t(1590), from_me: true, text: "Which day is it?" },
+      { id: "x3", conversation_id: "c-sam", ts: t(1580), sender_name: "Sam Lee", text: "Saturday, bus at 7" },
+      { id: "x4", conversation_id: "c-sam", ts: t(5), sender_name: "Sam Lee", text: "So are you in?" },
+      { id: "x5", conversation_id: "c-sam", ts: t(4), from_me: true, text: "Yes, see you at the bus" },
+    ],
+  });
+
+  const init = await rpc(env, "initialize", { protocolVersion: "2025-06-18" });
+  assert.match(init.result.instructions, /surrounding texts/);
+  const tools = (await rpc(env, "tools/list", {})).result.tools;
+  for (const n of ["get_recent_texts", "get_conversation", "search_texts"]) {
+    assert.match(tools.find((x) => x.name === n).description, /surrounding texts/, n);
+  }
+
+  // Recent texts carry the earlier ones, from both sides, even without the user's own in the window.
+  let recent = await tool(env, "get_recent_texts", { minutes: 10, include_mine: false });
+  let sam = recent.conversations.find((c) => c.conversation_id === "c-sam");
+  assert.deepEqual(sam.texts.map((x) => x.text), ["So are you in?"]);
+  assert.deepEqual(sam.earlier.map((x) => x.text), ["Are you coming to the meet?", "Which day is it?", "Saturday, bus at 7"]);
+  assert.equal(sam.earlier[1].from, "Me");
+  recent = await tool(env, "get_recent_texts", { minutes: 10, context: 1 });
+  sam = recent.conversations.find((c) => c.conversation_id === "c-sam");
+  assert.deepEqual(sam.earlier.map((x) => x.text), ["Saturday, bus at 7"]);
+  recent = await tool(env, "get_recent_texts", { minutes: 10, context: 0 });
+  assert.equal(recent.conversations.find((c) => c.conversation_id === "c-sam").earlier, undefined);
+  assert.ok(!JSON.stringify(recent).includes("first_ts"));
+
+  // Search hits carry the texts around them.
+  let found = await tool(env, "search_texts", { query: "bus at 7" });
+  assert.equal(found.results.length, 1);
+  assert.deepEqual(found.results[0].before.map((x) => x.text), ["Are you coming to the meet?", "Which day is it?"]);
+  assert.deepEqual(found.results[0].after.map((x) => x.text), ["So are you in?", "Yes, see you at the bus"]);
+  found = await tool(env, "search_texts", { query: "bus at 7", context: 0 });
+  assert.equal(found.results[0].before, undefined);
+  assert.equal(found.results[0].after, undefined);
+});

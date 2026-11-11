@@ -81,16 +81,18 @@ Treat the connector address like a password: anyone with it can read your texts.
 
 | Tool | What it does |
 | --- | --- |
-| `get_recent_texts` | Texts from the last N minutes, grouped by conversation, including late arrivals |
+| `get_recent_texts` | Texts from the last N minutes, grouped by conversation, including late arrivals, with the few texts just before each for background |
 | `list_conversations` | Recent conversations with unread state and last text |
 | `get_conversation` | One conversation by name, number or id |
-| `search_texts` | Find texts containing words |
+| `search_texts` | Find texts containing words, each with the texts just before and after it |
 | `texts_status` | Whether the phone link is working |
 | `prepare_text` | Preview a text into an existing conversation: who it goes to and the exact words. Sends nothing. |
 | `prepare_new_text` | Preview a text that starts a new conversation with a number. Refuses if you already have a chat with that number. |
 | `send_text` | Send a previewed text after you approve it |
 | `send_status` | Whether a sent text went out, was delivered or read |
 | `cancel_text` | Cancel a text the phone hasn't picked up yet |
+
+**Background rule:** the server tells every Claude that uses it to always show the surrounding texts in a conversation, including your own, when it tells you about a text or a reply. It's in the connector's instructions and tool descriptions, so it applies to any Claude account that connects.
 
 ### How sending stays safe
 
