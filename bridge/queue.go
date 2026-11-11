@@ -196,7 +196,7 @@ func (q *uploadQueue) Run(ctx context.Context) {
 					return
 				case <-time.After(backoff):
 				}
-				backoff = min(backoff*2, 2*time.Minute)
+				backoff = min(backoff*2, maxRetryWait)
 				continue
 			}
 			backoff = 2 * time.Second
