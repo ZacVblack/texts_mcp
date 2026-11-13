@@ -432,6 +432,9 @@ export async function linkStatus(ctx) {
   if (hb.last_sync_at_ms) status.last_full_sync = formatLocal(hb.last_sync_at_ms, zone);
   if (hb.pending_uploads) status.pending_uploads = hb.pending_uploads;
   if (hb.pending_photos) status.pending_photos = hb.pending_photos;
+  if (hb.photos_skipped) status.photos_skipped = hb.photos_skipped;
+  if (hb.photos_failed) status.photos_failed = hb.photos_failed;
+  if (hb.photo_problem) status.photo_problem = hb.photo_problem;
   if (hb.battery_low) status.battery_low = true;
   if (hb.bridge_version) status.bridge_version = hb.bridge_version;
   status.can_send = hb.can_send === true;

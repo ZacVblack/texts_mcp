@@ -309,11 +309,15 @@ func (s *session) uploadPhotos(ctx context.Context) error {
 				}
 				if errors.Is(err, errPhotoFormat) {
 					s.log.Info().Err(err).Str("photo", j.ID).Msg("Skipping a photo Claude can't be shown")
+					s.r.photosSkipped.Add(1)
+					s.r.setPhotoProblem("skipped: " + err.Error())
 					q.finish(j.ID)
 					continue
 				}
 				if q.retry(j.ID) {
 					s.log.Warn().Err(err).Str("photo", j.ID).Msg("Giving up on a photo after several tries")
+					s.r.photosFailed.Add(1)
+					s.r.setPhotoProblem("gave up: " + err.Error())
 				} else {
 					s.log.Debug().Err(err).Str("photo", j.ID).Msg("Photo upload failed; will retry")
 				}
@@ -468,4 +472,16 @@ func (r *runner) setPhotoBackfillAt(ms int64) {
 	st := r.st
 	r.stMu.Unlock()
 	saveBridgeState(st)
+}
+
+func (r *runner) setPhotoProblem(msg string) {
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	r.photoProblem.Store(msg)
+}
+
+func (r *runner) lastPhotoProblem() string {
+	v, _ := r.photoProblem.Load().(string)
+	return v
 }

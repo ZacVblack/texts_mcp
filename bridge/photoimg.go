@@ -12,6 +12,7 @@ import (
 	_ "image/png"
 	"net/http"
 
+	"github.com/gen2brain/heic"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
@@ -44,12 +45,41 @@ var passThroughMimes = map[string]string{
 	"webp": "image/webp",
 }
 
+// isHEIF reports whether b looks like a HEIF file (iPhone camera photos are
+// HEIC). Some put a generic brand first, which the image package's sniffing
+// doesn't match, so this checks the box type only.
+func isHEIF(b []byte) bool {
+	return len(b) >= 12 && string(b[4:8]) == "ftyp"
+}
+
+// decodeConfig is image.DecodeConfig plus HEIF files with any brand.
+func decodeConfig(src []byte) (image.Config, string, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(src))
+	if err != nil && isHEIF(src) {
+		if cfg, err = heic.DecodeConfig(bytes.NewReader(src)); err == nil {
+			format = "heic"
+		}
+	}
+	return cfg, format, err
+}
+
+// decodeImage is image.Decode plus HEIF files with any brand. The HEIC
+// decoder applies the photo's own rotation itself.
+func decodeImage(src []byte, format string) (image.Image, error) {
+	if format == "heic" {
+		return heic.Decode(bytes.NewReader(src))
+	}
+	img, _, err := image.Decode(bytes.NewReader(src))
+	return img, err
+}
+
 // preparePhoto returns the photo as it is when it is small enough and needs no
 // turning, and otherwise a turned, shrunk JPEG of at most photoMaxBytes.
+// HEIC photos are always turned into JPEG, since Claude can't show HEIC.
 func preparePhoto(src []byte) (*preparedPhoto, error) {
-	cfg, format, err := image.DecodeConfig(bytes.NewReader(src))
+	cfg, format, err := decodeConfig(src)
 	if err != nil {
-		return nil, fmt.Errorf("%w (%s)", errPhotoFormat, http.DetectContentType(src))
+		return nil, fmt.Errorf("%w (%s)", errPhotoFormat, describeFormat(src))
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > photoMaxPixels {
 		return nil, fmt.Errorf("%w (%dx%d pixels)", errPhotoFormat, cfg.Width, cfg.Height)
@@ -62,9 +92,9 @@ func preparePhoto(src []byte) (*preparedPhoto, error) {
 		max(cfg.Width, cfg.Height) <= photoMaxSide {
 		return &preparedPhoto{Data: src, Mime: mime, Width: cfg.Width, Height: cfg.Height}, nil
 	}
-	img, _, err := image.Decode(bytes.NewReader(src))
+	img, err := decodeImage(src, format)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errPhotoFormat, err)
+		return nil, fmt.Errorf("%w (%s): %v", errPhotoFormat, format, err)
 	}
 	side := photoMaxSide
 	for {
@@ -84,6 +114,14 @@ func preparePhoto(src []byte) (*preparedPhoto, error) {
 		}
 		side = max(side*3/4, photoMinSide)
 	}
+}
+
+// describeFormat names a file's type for the log, including a HEIF brand.
+func describeFormat(b []byte) string {
+	if isHEIF(b) {
+		return "HEIF " + string(b[8:12])
+	}
+	return http.DetectContentType(b)
 }
 
 // scaleToFit draws img onto a white RGBA canvas whose longest side is at most

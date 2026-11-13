@@ -143,6 +143,11 @@ type Heartbeat struct {
 	CanSend bool `json:"can_send"`
 	// PendingPhotos counts photos waiting to be uploaded.
 	PendingPhotos int `json:"pending_photos,omitempty"`
+	// PhotosSkipped and PhotosFailed count photos since the bridge started
+	// that could not be uploaded; PhotoProblem says why, for the latest one.
+	PhotosSkipped int    `json:"photos_skipped,omitempty"`
+	PhotosFailed  int    `json:"photos_failed,omitempty"`
+	PhotoProblem  string `json:"photo_problem,omitempty"`
 }
 
 func (w *workerClient) SendHeartbeat(ctx context.Context, hb *Heartbeat) error {
