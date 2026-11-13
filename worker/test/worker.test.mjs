@@ -289,3 +289,36 @@ test("photos: upload, missing check, photo_ids on texts, view_photos, delete and
   r = await call(env, "POST", "/bridge/photos/missing", { ids: ["old.0"] }, bt);
   assert.deepEqual(r.data.missing, ["old.0"]);
 });
+
+test("photos: a preview is replaced by the full photo, never the other way", async () => {
+  const env = setup();
+  const bt = await deriveToken(PASS, "texts-mcp:bridge:v1");
+  const now = Date.now();
+  await call(env, "POST", "/bridge/ingest", {
+    conversations: [{ id: "c1", name: "", folder: "inbox", last_message_at_ms: now, participants: [{ id: "p1", name: "Coach Nick" }] }],
+    messages: [{ id: "s1", conversation_id: "c1", ts: now, from_me: false, sender_name: "Coach Nick", text: "[photo]", kind: "photo", status: "received" }],
+  }, bt);
+  await Promise.all(waits.splice(0));
+  const small = "R0lGODlhAQABAAAAACw=";
+  const big = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const photo = { id: "s1.0", message_id: "s1", conversation_id: "c1", ts: now, width: 1, height: 1 };
+
+  assert.equal((await call(env, "POST", "/bridge/photo", { ...photo, mime: "image/gif", data: small, thumb: true }, bt)).status, 200);
+  let r = await call(env, "POST", "/bridge/photos/missing", { ids: ["s1.0"] }, bt);
+  assert.deepEqual(r.data.missing, [], "a preview counts as there for a preview");
+  r = await call(env, "POST", "/bridge/photos/missing", { ids: ["s1.0"], full: ["s1.0"] }, bt);
+  assert.deepEqual(r.data.missing, ["s1.0"], "but not for the full photo");
+
+  r = await mcp(env, "tools/call", { name: "view_photos", arguments: { photo_ids: ["s1.0"] } });
+  assert.match(r.data.result.content[0].text, /preview/);
+
+  await call(env, "POST", "/bridge/photo", { ...photo, mime: "image/png", data: big }, bt);
+  r = await call(env, "POST", "/bridge/photos/missing", { ids: ["s1.0"], full: ["s1.0"] }, bt);
+  assert.deepEqual(r.data.missing, []);
+  // A late preview doesn't overwrite the full photo.
+  await call(env, "POST", "/bridge/photo", { ...photo, mime: "image/gif", data: small, thumb: true }, bt);
+  r = await mcp(env, "tools/call", { name: "view_photos", arguments: { photo_ids: ["s1.0"] } });
+  const img = r.data.result.content.find((c) => c.type === "image");
+  assert.deepEqual([img.mimeType, img.data], ["image/png", big]);
+  assert.doesNotMatch(r.data.result.content[0].text, /preview/);
+});

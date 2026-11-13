@@ -191,7 +191,7 @@ func TestPhotoQueueKeepsRecentPhotosAcrossRestarts(t *testing.T) {
 	if q2.Pending() != 2 {
 		t.Fatalf("after restart pending = %d, want 2", q2.Pending())
 	}
-	q2.finish("newest.0")
+	q2.finish(newest)
 	q2.Add(newest) // already done: not queued again
 	if q2.Pending() != 1 {
 		t.Fatalf("pending = %d, want 1", q2.Pending())
@@ -237,5 +237,70 @@ func TestPreparePhotoTurnsHEICIntoJPEG(t *testing.T) {
 	copy(generic[8:12], "mif1")
 	if _, err := preparePhoto(generic); err != nil {
 		t.Fatalf("mif1 brand: %v", err)
+	}
+}
+
+func TestPhotoJobsForPreviews(t *testing.T) {
+	part := "part1"
+	m := &gmproto.Message{
+		MessageID:      "m2",
+		ConversationID: "781",
+		Timestamp:      1_700_000_000_000_000,
+		MessageInfo: []*gmproto.MessageInfo{
+			{ActionMessageID: &part, Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{
+				MimeType: "image/jpeg", ThumbnailMediaID: "thumb", ThumbnailDecryptionKey: []byte{9}}}},
+			{Data: &gmproto.MessageInfo_MediaContent{MediaContent: &gmproto.MediaContent{
+				MimeType: "image/png", MediaData: []byte("inline photo")}}},
+		},
+	}
+	jobs := photoJobsFor(m)
+	if len(jobs) != 2 {
+		t.Fatalf("got %d jobs: %+v", len(jobs), jobs)
+	}
+	if j := jobs[0]; j.ID != "m2.0" || !j.Thumb || j.MediaID != "thumb" || j.PartID != "part1" {
+		t.Fatalf("bad preview job %+v", j)
+	}
+	if j := jobs[1]; j.ID != "m2.1" || !j.Thumb || string(j.Inline) != "inline photo" || j.MediaID != "" {
+		t.Fatalf("bad inline job %+v", j)
+	}
+}
+
+func TestPhotoQueueFetchesFullPhotoAfterPreview(t *testing.T) {
+	q := newPhotoQueue("", zerolog.Nop())
+	now := time.Now().UnixMilli()
+	preview := photoJob{ID: "m.0", TsMs: now, MediaID: "t", Key: []byte{1}, Thumb: true}
+	full := photoJob{ID: "m.0", TsMs: now, MediaID: "f", Key: []byte{2}}
+
+	q.Add(preview)
+	q.finish(preview)
+	q.Add(preview) // the same preview again: nothing to do
+	if q.Pending() != 0 {
+		t.Fatal("preview queued twice")
+	}
+	q.Add(full)
+	if got := q.next(5); len(got) != 1 || got[0].Thumb {
+		t.Fatalf("full photo not queued after its preview: %+v", got)
+	}
+	q.Add(preview) // a preview never replaces a waiting full photo
+	if got := q.next(5); len(got) != 1 || got[0].Thumb {
+		t.Fatalf("preview replaced the full photo: %+v", got)
+	}
+	q.finish(full)
+	q.Add(preview, full)
+	if q.Pending() != 0 {
+		t.Fatal("photo queued again after the full one went up")
+	}
+
+	// A full photo that arrives while its preview is still waiting replaces it.
+	q2 := newPhotoQueue("", zerolog.Nop())
+	q2.Add(preview)
+	q2.Add(full)
+	got := q2.next(5)
+	if len(got) != 1 || got[0].Thumb {
+		t.Fatalf("got %+v", got)
+	}
+	q2.finish(preview) // finishing a stale preview leaves the full photo
+	if q2.Pending() != 1 {
+		t.Fatal("full photo dropped by its preview finishing")
 	}
 }

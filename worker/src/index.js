@@ -135,12 +135,25 @@ let schemaReady = null;
 export function ensureSchema(db) {
   if (!db) throw new Error("D1 binding DB is missing");
   if (!schemaReady) {
-    schemaReady = db.batch(SCHEMA.map((sql) => db.prepare(sql))).catch((err) => {
-      schemaReady = null;
-      throw err;
-    });
+    schemaReady = db
+      .batch(SCHEMA.map((sql) => db.prepare(sql)))
+      .then(() => addColumn(db, "ALTER TABLE photos ADD COLUMN thumb INTEGER NOT NULL DEFAULT 0"))
+      .catch((err) => {
+        schemaReady = null;
+        throw err;
+      });
   }
   return schemaReady;
+}
+
+// addColumn adds a column to a table made by an older version; it is already
+// there on every later run.
+async function addColumn(db, sql) {
+  try {
+    await db.prepare(sql).run();
+  } catch (err) {
+    if (!/duplicate column/i.test(String(err && err.message))) throw err;
+  }
 }
 
 // Test hook: lets each test start from a fresh database.
@@ -254,6 +267,9 @@ async function handleBridge(request, env, ctx, sub) {
         photos_skipped: num(b.photos_skipped),
         photos_failed: num(b.photos_failed),
         photo_problem: str(b.photo_problem, 200),
+        photo_previews: num(b.photo_previews),
+        full_photos_asked: num(b.full_photos_asked),
+        photos_no_media: num(b.photos_no_media),
         can_send: b.can_send === true,
       };
       await kvPut(db, "heartbeat", JSON.stringify(hb));
@@ -274,7 +290,7 @@ async function handleBridge(request, env, ctx, sub) {
     if (sub === "/photos/missing" && request.method === "POST") {
       const b = await readJson(request);
       await touchPhoneContact(db);
-      return json({ missing: await photosMissing(db, b && b.ids) });
+      return json({ missing: await photosMissing(db, b && b.ids, b && b.full) });
     }
 
     if (sub === "/photo" && request.method === "POST") {
@@ -421,17 +437,19 @@ export async function prune(env, now = Date.now()) {
 
 // ---------- photos ----------
 
-// photosMissing returns which of the given photo IDs are not stored yet.
-export async function photosMissing(db, ids) {
+// photosMissing returns which of the given photo IDs are not stored yet. An
+// ID listed in full also counts while only its preview is stored.
+export async function photosMissing(db, ids, full) {
   const list = Array.isArray(ids) ? [...new Set(ids.map((x) => str(x, 200)).filter(Boolean))].slice(0, 100) : [];
   if (!list.length) return [];
+  const wantFull = new Set(Array.isArray(full) ? full.map((x) => str(x, 200)) : []);
   const have = new Set();
   for (let i = 0; i < list.length; i += 50) {
     const part = list.slice(i, i + 50);
     const rows = (
-      await db.prepare(`SELECT id FROM photos WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part).all()
+      await db.prepare(`SELECT id, thumb FROM photos WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part).all()
     ).results;
-    for (const r of rows) have.add(r.id);
+    for (const r of rows) if (!(r.thumb && wantFull.has(r.id))) have.add(r.id);
   }
   return list.filter((id) => !have.has(id));
 }
@@ -452,13 +470,14 @@ export async function storePhoto(db, b, now) {
   if (bytes > PHOTO_MAX_BYTES) throw new HttpError(413, "photo too large");
   await db
     .prepare(
-      `INSERT INTO photos (id, message_id, conversation_id, ts, mime, width, height, bytes, data, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO photos (id, message_id, conversation_id, ts, mime, width, height, bytes, data, received_at, thumb)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET message_id = excluded.message_id, conversation_id = excluded.conversation_id,
          ts = excluded.ts, mime = excluded.mime, width = excluded.width, height = excluded.height,
-         bytes = excluded.bytes, data = excluded.data`
+         bytes = excluded.bytes, data = excluded.data, received_at = excluded.received_at, thumb = excluded.thumb
+       WHERE excluded.thumb = 0 OR photos.thumb = 1`
     )
-    .bind(id, messageId, conv, ts, mime, num(b.width), num(b.height), bytes, data, now)
+    .bind(id, messageId, conv, ts, mime, num(b.width), num(b.height), bytes, data, now, b.thumb === true ? 1 : 0)
     .run();
   await trimPhotos(db);
   return { ok: true, id, bytes };

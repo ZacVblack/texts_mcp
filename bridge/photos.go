@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -32,6 +33,9 @@ const (
 	// When the Worker doesn't know about photos yet (an older Worker), wait
 	// this long before asking again.
 	photoUnsupportedWait = 10 * time.Minute
+	// A photo Google sends inline (no download needed) bigger than this is
+	// not kept in the queue.
+	photoMaxInlineBytes = 3 << 20
 )
 
 // photoJob is one photo waiting to be fetched and uploaded.
@@ -42,7 +46,27 @@ type photoJob struct {
 	TsMs           int64  `json:"ts"`
 	MediaID        string `json:"media_id"`
 	Key            []byte `json:"key"`
-	Tries          int    `json:"tries,omitempty"`
+	// Inline holds the photo itself when Google sent it with the message.
+	Inline []byte `json:"inline,omitempty"`
+	// Thumb marks a preview: Google only has the full photo once the phone
+	// uploads it, which the bridge asks for after sending the preview.
+	Thumb bool `json:"thumb,omitempty"`
+	// PartID is the attachment's own ID, used to ask for the full photo.
+	PartID string `json:"part_id,omitempty"`
+	Tries  int    `json:"tries,omitempty"`
+}
+
+// photosNoMedia counts photo attachments seen with nothing to download yet
+// (not even a preview), for the heartbeat.
+var photosNoMedia atomic.Int64
+
+// doneKey keeps a preview and the full photo apart, so the full photo is
+// still fetched after its preview went up.
+func (j photoJob) doneKey() string {
+	if j.Thumb {
+		return j.ID + "#preview"
+	}
+	return j.ID
 }
 
 func photoCutoff(now time.Time) int64 {
@@ -64,19 +88,28 @@ func photoJobsFor(m *gmproto.Message) []photoJob {
 		if mediaKind(media.GetMimeType(), media.GetFormat()) != "photo" {
 			continue
 		}
-		// An MMS that is still downloading on the phone has no media yet; a
-		// later update of the same message brings it.
-		if media.GetMediaID() == "" || len(media.GetDecryptionKey()) == 0 {
-			continue
-		}
-		jobs = append(jobs, photoJob{
+		j := photoJob{
 			ID:             m.GetMessageID() + "." + strconv.Itoa(idx),
 			MessageID:      m.GetMessageID(),
 			ConversationID: m.GetConversationID(),
 			TsMs:           m.GetTimestamp() / 1000,
-			MediaID:        media.GetMediaID(),
-			Key:            media.GetDecryptionKey(),
-		})
+			PartID:         info.GetActionMessageID(),
+		}
+		// Google often has only a preview of a photo until the phone uploads
+		// the full one (many MMS photos), so take the best that is there.
+		switch {
+		case media.GetMediaID() != "" && len(media.GetDecryptionKey()) > 0:
+			j.MediaID, j.Key = media.GetMediaID(), media.GetDecryptionKey()
+		case media.GetThumbnailMediaID() != "" && len(media.GetThumbnailDecryptionKey()) > 0:
+			j.MediaID, j.Key, j.Thumb = media.GetThumbnailMediaID(), media.GetThumbnailDecryptionKey(), true
+		case len(media.GetMediaData()) > 0 && len(media.GetMediaData()) <= photoMaxInlineBytes:
+			j.Inline, j.Thumb = media.GetMediaData(), true
+		default:
+			// Still downloading on the phone; a later update brings it.
+			photosNoMedia.Add(1)
+			continue
+		}
+		jobs = append(jobs, j)
 	}
 	return jobs
 }
@@ -127,12 +160,17 @@ func (q *photoQueue) Add(jobs ...photoJob) {
 	added := false
 	q.mu.Lock()
 	for _, j := range jobs {
-		if j.TsMs < cutoff || q.done[j.ID] {
+		if j.TsMs < cutoff || q.done[j.doneKey()] || (j.Thumb && q.done[j.ID]) {
 			continue
 		}
 		if old, ok := q.pending[j.ID]; ok {
-			// Keep the try count; take the newest media details.
-			j.Tries = old.Tries
+			if j.Thumb && !old.Thumb {
+				continue // already waiting for the full photo
+			}
+			if j.Thumb == old.Thumb {
+				// Keep the try count; take the newest media details.
+				j.Tries = old.Tries
+			}
 		}
 		q.pending[j.ID] = j
 		added = true
@@ -164,11 +202,14 @@ func (q *photoQueue) next(n int) []photoJob {
 	return jobs
 }
 
-// finish drops a photo from the queue, uploaded or given up on.
-func (q *photoQueue) finish(id string) {
+// finish drops a photo from the queue, uploaded or given up on. A newer
+// version of it queued meanwhile (the full photo after a preview) stays.
+func (q *photoQueue) finish(j photoJob) {
 	q.mu.Lock()
-	delete(q.pending, id)
-	q.done[id] = true
+	if cur, ok := q.pending[j.ID]; ok && cur.Thumb == j.Thumb {
+		delete(q.pending, j.ID)
+	}
+	q.done[j.doneKey()] = true
 	q.mu.Unlock()
 	q.save()
 }
@@ -183,7 +224,7 @@ func (q *photoQueue) retry(id string) bool {
 		j.Tries++
 		if j.Tries >= photoMaxTries {
 			delete(q.pending, id)
-			q.done[id] = true
+			q.done[j.doneKey()] = true
 			dropped = true
 		} else {
 			q.pending[id] = j
@@ -282,11 +323,15 @@ func (s *session) uploadPhotos(ctx context.Context) error {
 			return nil
 		}
 		ids := make([]string, len(jobs))
+		var full []string
 		for i, j := range jobs {
 			ids[i] = j.ID
+			if !j.Thumb {
+				full = append(full, j.ID)
+			}
 		}
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		missing, err := s.r.wc.PhotosMissing(cctx, ids)
+		missing, err := s.r.wc.PhotosMissing(cctx, ids, full)
 		cancel()
 		if err != nil {
 			return err
@@ -300,7 +345,11 @@ func (s *session) uploadPhotos(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if !want[j.ID] {
-				q.finish(j.ID)
+				q.finish(j)
+				if j.Thumb {
+					// Its preview is there; make sure the full photo is asked for.
+					s.requestFullPhoto(ctx, j)
+				}
 				continue
 			}
 			if err := s.uploadPhoto(ctx, j); err != nil {
@@ -311,7 +360,7 @@ func (s *session) uploadPhotos(ctx context.Context) error {
 					s.log.Info().Err(err).Str("photo", j.ID).Msg("Skipping a photo Claude can't be shown")
 					s.r.photosSkipped.Add(1)
 					s.r.setPhotoProblem("skipped: " + err.Error())
-					q.finish(j.ID)
+					q.finish(j)
 					continue
 				}
 				if q.retry(j.ID) {
@@ -324,8 +373,12 @@ func (s *session) uploadPhotos(ctx context.Context) error {
 				// A failure usually means the network dropped; stop this round.
 				return err
 			}
-			q.finish(j.ID)
-			s.log.Debug().Str("photo", j.ID).Msg("Photo uploaded")
+			q.finish(j)
+			s.log.Debug().Str("photo", j.ID).Bool("preview", j.Thumb).Msg("Photo uploaded")
+			if j.Thumb {
+				s.r.photosPreview.Add(1)
+				s.requestFullPhoto(ctx, j)
+			}
 			if !sleepCtx(ctx, 500*time.Millisecond) {
 				return ctx.Err()
 			}
@@ -335,9 +388,12 @@ func (s *session) uploadPhotos(ctx context.Context) error {
 }
 
 func (s *session) uploadPhoto(ctx context.Context, j photoJob) error {
-	raw, err := s.downloadPhoto(ctx, j)
-	if err != nil {
-		return err
+	raw := j.Inline
+	if len(raw) == 0 {
+		var err error
+		if raw, err = s.downloadPhoto(ctx, j); err != nil {
+			return err
+		}
 	}
 	p, err := preparePhoto(raw)
 	if err != nil {
@@ -354,7 +410,36 @@ func (s *session) uploadPhoto(ctx context.Context, j photoJob) error {
 		Width:          p.Width,
 		Height:         p.Height,
 		Data:           base64.StdEncoding.EncodeToString(p.Data),
+		Thumb:          j.Thumb,
 	})
+}
+
+// requestFullPhoto asks the phone to upload the full photo behind a preview,
+// once per photo while the bridge runs. Google then sends the message again
+// with the full photo, which is queued like any new photo.
+func (s *session) requestFullPhoto(ctx context.Context, j photoJob) {
+	if j.PartID == "" || ctx.Err() != nil {
+		return
+	}
+	key := j.MessageID + "/" + j.PartID
+	s.r.fullAskedMu.Lock()
+	if s.r.fullAsked == nil {
+		s.r.fullAsked = map[string]bool{}
+	}
+	asked := s.r.fullAsked[key]
+	s.r.fullAsked[key] = true
+	s.r.fullAskedMu.Unlock()
+	if asked {
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := s.client.GetFullSizeImage(rctx, j.MessageID, j.PartID); err != nil {
+		s.log.Debug().Err(err).Str("photo", j.ID).Msg("Could not ask the phone for the full photo")
+		return
+	}
+	s.r.photosFullAsked.Add(1)
+	s.log.Debug().Str("photo", j.ID).Msg("Asked the phone for the full photo")
 }
 
 // downloadPhoto fetches and decrypts one photo. libgm's download takes no

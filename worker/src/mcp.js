@@ -435,6 +435,9 @@ export async function linkStatus(ctx) {
   if (hb.photos_skipped) status.photos_skipped = hb.photos_skipped;
   if (hb.photos_failed) status.photos_failed = hb.photos_failed;
   if (hb.photo_problem) status.photo_problem = hb.photo_problem;
+  if (hb.photo_previews) status.photo_previews = hb.photo_previews;
+  if (hb.full_photos_asked) status.full_photos_asked = hb.full_photos_asked;
+  if (hb.photos_no_media) status.photos_no_media = hb.photos_no_media;
   if (hb.battery_low) status.battery_low = true;
   if (hb.bridge_version) status.bridge_version = hb.bridge_version;
   status.can_send = hb.can_send === true;
@@ -758,7 +761,7 @@ async function viewPhotos(args, ctx) {
   const rows = (
     await db
       .prepare(
-        `SELECT p.id, p.mime, p.data, p.width, p.height, p.ts, p.conversation_id,
+        `SELECT p.id, p.mime, p.data, p.width, p.height, p.ts, p.conversation_id, p.thumb,
                 m.from_me, m.sender_name, m.sender_number, m.text, c.name AS conv_name, c.participants AS conv_participants
            FROM photos p
            LEFT JOIN messages m ON m.id = p.message_id
@@ -781,7 +784,9 @@ async function viewPhotos(args, ctx) {
     const conv = conversationTitle({ name: r.conv_name }, parseParticipants(r.conv_participants));
     content.push({
       type: "text",
-      text: `Photo ${id}: sent by ${from} in "${conv}" (conversation_id ${r.conversation_id}), ${formatLocal(r.ts, zone)}.`,
+      text:
+        `Photo ${id}: sent by ${from} in "${conv}" (conversation_id ${r.conversation_id}), ${formatLocal(r.ts, zone)}.` +
+        (r.thumb ? " This is a small preview; the full photo replaces it once the phone has uploaded it." : ""),
     });
     content.push({ type: "image", data: r.data, mimeType: r.mime });
   }
