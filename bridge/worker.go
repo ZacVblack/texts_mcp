@@ -141,9 +141,49 @@ type Heartbeat struct {
 	PendingUploads int    `json:"pending_uploads"`
 	// CanSend tells the Worker this bridge sends approved texts.
 	CanSend bool `json:"can_send"`
+	// PendingPhotos counts photos waiting to be uploaded.
+	PendingPhotos int `json:"pending_photos,omitempty"`
 }
 
 func (w *workerClient) SendHeartbeat(ctx context.Context, hb *Heartbeat) error {
 	_, err := w.do(ctx, http.MethodPost, "/bridge/heartbeat", hb, nil)
+	return err
+}
+
+// errPhotosUnsupported means the Worker is an older version without photo storage.
+var errPhotosUnsupported = errors.New("the Worker does not take photos yet")
+
+// PhotosMissing returns which of the given photo IDs the Worker doesn't have yet.
+func (w *workerClient) PhotosMissing(ctx context.Context, ids []string) ([]string, error) {
+	var out struct {
+		Missing []string `json:"missing"`
+	}
+	code, err := w.do(ctx, http.MethodPost, "/bridge/photos/missing", map[string]any{"ids": ids}, &out)
+	if code == http.StatusNotFound {
+		return nil, errPhotosUnsupported
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out.Missing, nil
+}
+
+// PhotoUpload is one photo, already shrunk, as base64.
+type PhotoUpload struct {
+	ID             string `json:"id"`
+	MessageID      string `json:"message_id"`
+	ConversationID string `json:"conversation_id"`
+	TsMs           int64  `json:"ts"`
+	Mime           string `json:"mime"`
+	Width          int    `json:"width"`
+	Height         int    `json:"height"`
+	Data           string `json:"data"`
+}
+
+func (w *workerClient) UploadPhoto(ctx context.Context, p *PhotoUpload) error {
+	code, err := w.do(ctx, http.MethodPost, "/bridge/photo", p, nil)
+	if code == http.StatusNotFound {
+		return errPhotosUnsupported
+	}
 	return err
 }
