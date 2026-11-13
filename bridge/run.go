@@ -76,6 +76,11 @@ type runner struct {
 	photosSkipped atomic.Int64
 	photosFailed  atomic.Int64
 	photoProblem  atomic.Value // string
+	// Previews uploaded, and full photos asked of the phone (photos.go).
+	photosPreview   atomic.Int64
+	photosFullAsked atomic.Int64
+	fullAskedMu     sync.Mutex
+	fullAsked       map[string]bool
 
 	phoneResponding atomic.Bool
 	batteryLow      atomic.Bool
@@ -249,19 +254,22 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 		}
 		state, detail := r.currentState()
 		hb := &Heartbeat{
-			State:          state,
-			Detail:         detail,
-			PhoneResponds:  r.phoneResponding.Load(),
-			BatteryLow:     r.batteryLow.Load(),
-			LastTextAtMs:   r.lastTextAt.Load(),
-			LastSyncAtMs:   r.lastSyncAt.Load(),
-			BridgeVersion:  Version,
-			PendingUploads: r.queue.Pending(),
-			CanSend:        true,
-			PendingPhotos:  r.photos.Pending(),
-			PhotosSkipped:  int(r.photosSkipped.Load()),
-			PhotosFailed:   int(r.photosFailed.Load()),
-			PhotoProblem:   r.lastPhotoProblem(),
+			State:           state,
+			Detail:          detail,
+			PhoneResponds:   r.phoneResponding.Load(),
+			BatteryLow:      r.batteryLow.Load(),
+			LastTextAtMs:    r.lastTextAt.Load(),
+			LastSyncAtMs:    r.lastSyncAt.Load(),
+			BridgeVersion:   Version,
+			PendingUploads:  r.queue.Pending(),
+			CanSend:         true,
+			PendingPhotos:   r.photos.Pending(),
+			PhotosSkipped:   int(r.photosSkipped.Load()),
+			PhotosFailed:    int(r.photosFailed.Load()),
+			PhotoProblem:    r.lastPhotoProblem(),
+			PhotoPreviews:   int(r.photosPreview.Load()),
+			FullPhotosAsked: int(r.photosFullAsked.Load()),
+			PhotosNoMedia:   int(photosNoMedia.Load()),
 		}
 		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := r.wc.SendHeartbeat(hctx, hb); err != nil {

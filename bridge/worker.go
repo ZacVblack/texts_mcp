@@ -148,6 +148,12 @@ type Heartbeat struct {
 	PhotosSkipped int    `json:"photos_skipped,omitempty"`
 	PhotosFailed  int    `json:"photos_failed,omitempty"`
 	PhotoProblem  string `json:"photo_problem,omitempty"`
+	// PhotoPreviews counts previews uploaded since the bridge started, and
+	// FullPhotosAsked how many full photos it asked the phone for.
+	PhotoPreviews   int `json:"photo_previews,omitempty"`
+	FullPhotosAsked int `json:"full_photos_asked,omitempty"`
+	// PhotosNoMedia counts photos seen with nothing to download yet.
+	PhotosNoMedia int `json:"photos_no_media,omitempty"`
 }
 
 func (w *workerClient) SendHeartbeat(ctx context.Context, hb *Heartbeat) error {
@@ -158,12 +164,14 @@ func (w *workerClient) SendHeartbeat(ctx context.Context, hb *Heartbeat) error {
 // errPhotosUnsupported means the Worker is an older version without photo storage.
 var errPhotosUnsupported = errors.New("the Worker does not take photos yet")
 
-// PhotosMissing returns which of the given photo IDs the Worker doesn't have yet.
-func (w *workerClient) PhotosMissing(ctx context.Context, ids []string) ([]string, error) {
+// PhotosMissing returns which of the given photo IDs the Worker doesn't have
+// yet. An ID in full also counts as missing while the Worker has only its
+// preview.
+func (w *workerClient) PhotosMissing(ctx context.Context, ids, full []string) ([]string, error) {
 	var out struct {
 		Missing []string `json:"missing"`
 	}
-	code, err := w.do(ctx, http.MethodPost, "/bridge/photos/missing", map[string]any{"ids": ids}, &out)
+	code, err := w.do(ctx, http.MethodPost, "/bridge/photos/missing", map[string]any{"ids": ids, "full": full}, &out)
 	if code == http.StatusNotFound {
 		return nil, errPhotosUnsupported
 	}
@@ -183,6 +191,8 @@ type PhotoUpload struct {
 	Width          int    `json:"width"`
 	Height         int    `json:"height"`
 	Data           string `json:"data"`
+	// Thumb marks a preview; the full photo replaces it when it comes.
+	Thumb bool `json:"thumb,omitempty"`
 }
 
 func (w *workerClient) UploadPhoto(ctx context.Context, p *PhotoUpload) error {
