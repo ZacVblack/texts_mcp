@@ -37,14 +37,14 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           mkdir -p ../dist
           build() {
-            GOOS=$1 GOARCH=$2 GOARM=${4:-} go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "../dist/$3" .
+            GOOS=$1 GOARCH=$2 GOARM=${4:-} go build -tags "wasm2go nodynamic" -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "../dist/$3" .
           }
           # Android is built with cgo against the NDK so it uses the phone's own
           # DNS resolver; Go's built-in one can't see Android's DNS settings.
           NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
           CC_ANDROID="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
           test -x "$CC_ANDROID" || { echo "Android NDK not found at '$NDK'"; exit 1; }
-          CGO_ENABLED=1 CC="$CC_ANDROID" GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o ../dist/texts-bridge-android-arm64 .
+          CGO_ENABLED=1 CC="$CC_ANDROID" GOOS=android GOARCH=arm64 go build -tags "wasm2go nodynamic" -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o ../dist/texts-bridge-android-arm64 .
           readelf -l ../dist/texts-bridge-android-arm64 | grep -q "/system/bin/linker64"
           build linux   arm   texts-bridge-linux-armv7 7
           build linux   arm64 texts-bridge-linux-arm64

@@ -145,8 +145,10 @@ func (s *sessionStore) Save(ctx context.Context, ad *libgm.AuthData, requireRemo
 // bridgeState is small bookkeeping kept between runs.
 type bridgeState struct {
 	WatermarkMs int64 `json:"watermark_ms"`
-	// PhotoBackfillAtMs is when recent conversations were last checked for photos.
-	PhotoBackfillAtMs int64 `json:"photo_backfill_at_ms,omitempty"`
+	// PhotoBackfillAtMs is when recent conversations were last checked for
+	// photos. The key changed when HEIC support came in, so the photos the
+	// first version skipped are looked for once more.
+	PhotoBackfillAtMs int64 `json:"photo_backfill_v2_at_ms,omitempty"`
 }
 
 func statePath() string { return filepath.Join(defaultConfigDir(), "state.json") }

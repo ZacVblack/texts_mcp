@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -210,5 +211,31 @@ func TestNilPhotoQueueIsSafe(t *testing.T) {
 	q.Add(photoJob{ID: "x.0", TsMs: time.Now().UnixMilli()})
 	if q.Pending() != 0 {
 		t.Fatal("nil queue has pending photos")
+	}
+}
+
+func TestPreparePhotoTurnsHEICIntoJPEG(t *testing.T) {
+	src, err := os.ReadFile("testdata/test.heic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	p, err := preparePhoto(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("HEIC %dx%d prepared in %v", p.Width, p.Height, time.Since(start))
+	if p.Mime != "image/jpeg" || p.Width <= 0 || p.Height <= 0 {
+		t.Fatalf("got %s %dx%d", p.Mime, p.Width, p.Height)
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(p.Data)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same photo with a generic brand first, as some phones write it.
+	generic := append([]byte(nil), src...)
+	copy(generic[8:12], "mif1")
+	if _, err := preparePhoto(generic); err != nil {
+		t.Fatalf("mif1 brand: %v", err)
 	}
 }

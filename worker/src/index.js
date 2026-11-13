@@ -251,6 +251,9 @@ async function handleBridge(request, env, ctx, sub) {
         bridge_version: str(b.bridge_version, 40),
         pending_uploads: num(b.pending_uploads),
         pending_photos: num(b.pending_photos),
+        photos_skipped: num(b.photos_skipped),
+        photos_failed: num(b.photos_failed),
+        photo_problem: str(b.photo_problem, 200),
         can_send: b.can_send === true,
       };
       await kvPut(db, "heartbeat", JSON.stringify(hb));

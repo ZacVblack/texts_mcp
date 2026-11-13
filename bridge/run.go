@@ -70,6 +70,13 @@ type runner struct {
 	state       string
 	stateDetail string
 
+	// Photos since the bridge started that were skipped (a format that
+	// can't be shown) or given up on (downloads kept failing), and the
+	// latest reason, so texts_status can say why a photo is missing.
+	photosSkipped atomic.Int64
+	photosFailed  atomic.Int64
+	photoProblem  atomic.Value // string
+
 	phoneResponding atomic.Bool
 	batteryLow      atomic.Bool
 	lastTextAt      atomic.Int64
@@ -252,6 +259,9 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			PendingUploads: r.queue.Pending(),
 			CanSend:        true,
 			PendingPhotos:  r.photos.Pending(),
+			PhotosSkipped:  int(r.photosSkipped.Load()),
+			PhotosFailed:   int(r.photosFailed.Load()),
+			PhotoProblem:   r.lastPhotoProblem(),
 		}
 		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := r.wc.SendHeartbeat(hctx, hb); err != nil {
