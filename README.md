@@ -85,6 +85,7 @@ Treat the connector address like a password: anyone with it can read your texts.
 | `list_conversations` | Recent conversations with unread state and last text |
 | `get_conversation` | One conversation by name, number or id |
 | `search_texts` | Find texts containing words, each with the texts just before and after it |
+| `view_photos` | Shows photos sent in texts (pass the `photo_ids` a text lists) |
 | `texts_status` | Whether the phone link is working |
 | `prepare_text` | Preview a text into an existing conversation: a ready-to-show draft with who it goes to and the exact words, plus the last few texts. Sends nothing. |
 | `prepare_new_text` | Preview a text that starts a new conversation with a number. Refuses if you already have a chat with that number. |

@@ -24,6 +24,7 @@ import {
   formatLocal,
   linkStatus,
   textOut,
+  MSG_COLS,
   tz,
   digits,
   prettyNumber,
@@ -364,7 +365,7 @@ async function prepareText(args, ctx) {
   const token = await insertPreview(db, now, { conversation_id: conv.id, title, people, text });
 
   const recent = (
-    await db.prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY ts DESC LIMIT 5").bind(conv.id).all()
+    await db.prepare(`SELECT ${MSG_COLS} FROM messages m WHERE m.conversation_id = ? ORDER BY m.ts DESC LIMIT 5`).bind(conv.id).all()
   ).results
     .reverse()
     .map((m) => textOut(m, zone, !!conv.is_group));

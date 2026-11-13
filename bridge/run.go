@@ -59,6 +59,7 @@ type runner struct {
 	wc     *workerClient
 	store  *sessionStore
 	queue  *uploadQueue
+	photos *photoQueue
 	log    zerolog.Logger
 	libLog zerolog.Logger
 
@@ -120,6 +121,7 @@ func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) er
 		wc:     wc,
 		store:  newSessionStore(cfg, wc, log),
 		queue:  newUploadQueue(wc, log),
+		photos: newPhotoQueue(photoQueuePath(), log),
 		log:    log,
 		libLog: libLog,
 		st:     loadBridgeState(),
@@ -249,6 +251,7 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			BridgeVersion:  Version,
 			PendingUploads: r.queue.Pending(),
 			CanSend:        true,
+			PendingPhotos:  r.photos.Pending(),
 		}
 		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := r.wc.SendHeartbeat(hctx, hb); err != nil {
@@ -356,6 +359,7 @@ func (r *runner) runSession(ctx context.Context, ad *libgm.AuthData, ss *sealedS
 	go s.syncLoop(sctx)
 	go s.pairingLoop(sctx)
 	go s.outboxLoop(sctx)
+	go s.photoLoop(sctx)
 
 	select {
 	case <-sctx.Done():
@@ -623,6 +627,7 @@ func (s *session) handleMessage(ctx context.Context, m *gmproto.Message) {
 	rec := convertMessage(m, participants)
 	s.r.queue.AddText(rec)
 	s.r.noteText(rec.TimestampMs)
+	s.r.photos.Add(photoJobsFor(m)...)
 }
 
 func (s *session) syncLoop(ctx context.Context) {
@@ -755,6 +760,7 @@ func (s *session) syncConversation(ctx context.Context, convID string, since int
 				rec.Backfill = backfill && rec.TimestampMs < time.Now().Add(-time.Hour).UnixMilli()
 				s.r.queue.AddText(rec)
 				s.r.noteText(rec.TimestampMs)
+				s.r.photos.Add(photoJobsFor(m)...)
 				n++
 			case actionDelete:
 				s.r.queue.AddDeleted(m.GetMessageID())

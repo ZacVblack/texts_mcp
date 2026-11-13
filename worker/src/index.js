@@ -107,8 +107,29 @@ const SCHEMA = [
      participants TEXT,
      updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+  // Photos from texts, shrunk on the phone to at most PHOTO_MAX_BYTES and kept
+  // as base64 so each fits in one D1 row.
+  `CREATE TABLE IF NOT EXISTS photos (
+     id TEXT PRIMARY KEY,
+     message_id TEXT NOT NULL,
+     conversation_id TEXT NOT NULL,
+     ts INTEGER NOT NULL,
+     mime TEXT NOT NULL,
+     width INTEGER,
+     height INTEGER,
+     bytes INTEGER NOT NULL,
+     data TEXT NOT NULL,
+     received_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS photos_message ON photos (message_id)`,
+  `CREATE INDEX IF NOT EXISTS photos_ts ON photos (ts)`,
   ...OUTBOX_SCHEMA,
 ];
+
+// Photo limits. One photo stays well under D1's 2 MB row limit, and all photos
+// together stay well under the free plan's 500 MB database limit.
+export const PHOTO_MAX_BYTES = 1_200_000;
+export const PHOTO_BUDGET_BYTES = 250 * 1024 * 1024;
+const PHOTO_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 let schemaReady = null;
 export function ensureSchema(db) {
@@ -229,6 +250,7 @@ async function handleBridge(request, env, ctx, sub) {
         last_sync_at_ms: num(b.last_sync_at_ms),
         bridge_version: str(b.bridge_version, 40),
         pending_uploads: num(b.pending_uploads),
+        pending_photos: num(b.pending_photos),
         can_send: b.can_send === true,
       };
       await kvPut(db, "heartbeat", JSON.stringify(hb));
@@ -244,6 +266,18 @@ async function handleBridge(request, env, ctx, sub) {
       const b = await readJson(request);
       await touchPhoneContact(db);
       return json(await bridgeOutboxResult(env, b || {}));
+    }
+
+    if (sub === "/photos/missing" && request.method === "POST") {
+      const b = await readJson(request);
+      await touchPhoneContact(db);
+      return json({ missing: await photosMissing(db, b && b.ids) });
+    }
+
+    if (sub === "/photo" && request.method === "POST") {
+      const b = await readJson(request);
+      await touchPhoneContact(db);
+      return json(await storePhoto(db, b || {}, Date.now()));
     }
 
     if (sub === "/ingest" && request.method === "POST") {
@@ -285,6 +319,7 @@ export async function ingest(db, b, now) {
     if (c.folder === "hidden") {
       // Spam, blocked or deleted on the phone: remove it here too.
       stmts.push(db.prepare("DELETE FROM messages WHERE conversation_id = ?").bind(id));
+      stmts.push(db.prepare("DELETE FROM photos WHERE conversation_id = ?").bind(id));
       stmts.push(db.prepare("DELETE FROM conversations WHERE id = ?").bind(id));
       deleted++;
       continue;
@@ -356,6 +391,7 @@ export async function ingest(db, b, now) {
     const s = str(id, 200);
     if (!s) continue;
     stmts.push(db.prepare("DELETE FROM messages WHERE id = ?").bind(s));
+    stmts.push(db.prepare("DELETE FROM photos WHERE message_id = ?").bind(s));
     deleted++;
   }
 
@@ -372,11 +408,66 @@ export async function prune(env, now = Date.now()) {
   const cutoff = now - days * 86400000;
   await env.DB.batch([
     env.DB.prepare("DELETE FROM messages WHERE ts < ?").bind(cutoff),
+    env.DB.prepare("DELETE FROM photos WHERE ts < ?").bind(cutoff),
     env.DB.prepare(
       "DELETE FROM conversations WHERE COALESCE(last_message_at, 0) < ? AND id NOT IN (SELECT DISTINCT conversation_id FROM messages)"
     ).bind(cutoff),
   ]);
   await pruneOutbox(env.DB, cutoff);
+}
+
+// ---------- photos ----------
+
+// photosMissing returns which of the given photo IDs are not stored yet.
+export async function photosMissing(db, ids) {
+  const list = Array.isArray(ids) ? [...new Set(ids.map((x) => str(x, 200)).filter(Boolean))].slice(0, 100) : [];
+  if (!list.length) return [];
+  const have = new Set();
+  for (let i = 0; i < list.length; i += 50) {
+    const part = list.slice(i, i + 50);
+    const rows = (
+      await db.prepare(`SELECT id FROM photos WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part).all()
+    ).results;
+    for (const r of rows) have.add(r.id);
+  }
+  return list.filter((id) => !have.has(id));
+}
+
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+export async function storePhoto(db, b, now) {
+  const id = str(b.id, 200);
+  const messageId = str(b.message_id, 200);
+  const conv = str(b.conversation_id, 200);
+  const ts = num(b.ts);
+  const mime = str(b.mime, 40);
+  const data = typeof b.data === "string" ? b.data : "";
+  if (!id || !messageId || !conv || !ts) throw new HttpError(400, "photo needs id, message_id, conversation_id and ts");
+  if (!PHOTO_MIMES.has(mime)) throw new HttpError(400, "photo must be JPEG, PNG, GIF or WebP");
+  if (!data || data.length % 4 !== 0 || !BASE64_RE.test(data)) throw new HttpError(400, "photo data is not base64");
+  const bytes = (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+  if (bytes > PHOTO_MAX_BYTES) throw new HttpError(413, "photo too large");
+  await db
+    .prepare(
+      `INSERT INTO photos (id, message_id, conversation_id, ts, mime, width, height, bytes, data, received_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET message_id = excluded.message_id, conversation_id = excluded.conversation_id,
+         ts = excluded.ts, mime = excluded.mime, width = excluded.width, height = excluded.height,
+         bytes = excluded.bytes, data = excluded.data`
+    )
+    .bind(id, messageId, conv, ts, mime, num(b.width), num(b.height), bytes, data, now)
+    .run();
+  await trimPhotos(db);
+  return { ok: true, id, bytes };
+}
+
+// trimPhotos deletes the oldest photos while all of them together are over budget.
+export async function trimPhotos(db, budget = PHOTO_BUDGET_BYTES) {
+  for (let i = 0; i < 20; i++) {
+    const row = await db.prepare("SELECT COALESCE(SUM(bytes), 0) AS total FROM photos").first();
+    if (!row || row.total <= budget) return;
+    await db.prepare("DELETE FROM photos WHERE id IN (SELECT id FROM photos ORDER BY ts ASC LIMIT 25)").run();
+  }
 }
 
 export function json(obj, status = 200, headers = {}) {

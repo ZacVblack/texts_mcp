@@ -150,7 +150,7 @@ test("bridge flow: session, heartbeat, ingest, MCP tools", async () => {
   assert.equal(r.status, 202);
   r = await mcp(env, "tools/list", {});
   assert.deepEqual(r.data.result.tools.map((t) => t.name).sort(),
-    ["cancel_text", "get_conversation", "get_recent_texts", "list_conversations", "prepare_new_text", "prepare_text", "search_texts", "send_status", "send_text", "texts_status"]);
+    ["cancel_text", "get_conversation", "get_recent_texts", "list_conversations", "prepare_new_text", "prepare_text", "search_texts", "send_status", "send_text", "texts_status", "view_photos"]);
   r = await mcp(env, "nope/method", {});
   assert.equal(r.data.error.code, -32601);
   const getRes = await worker.fetch(new Request(BASE + "/mcp/" + (await deriveToken(PASS, "texts-mcp:mcp:v1"))), env, ctx);
@@ -221,4 +221,71 @@ test("bridge flow: session, heartbeat, ingest, MCP tools", async () => {
   // Bad arguments come back as tool errors, not crashes.
   const bad = await mcp(env, "tools/call", { name: "get_recent_texts", arguments: { since: "not a date" } });
   assert.equal(bad.data.result.isError, true);
+});
+
+test("photos: upload, missing check, photo_ids on texts, view_photos, delete and prune", async () => {
+  const env = setup();
+  const bt = await deriveToken(PASS, "texts-mcp:bridge:v1");
+  const now = Date.now();
+  await call(env, "POST", "/bridge/ingest", {
+    conversations: [
+      { id: "781", name: "Ftc team", is_group: true, folder: "inbox", last_message_at_ms: now - 60000,
+        participants: [{ id: "p1", name: "Coach Nick", number: "+15550101111" }, { id: "p2", name: "Sam", number: "+15550102222" }] },
+    ],
+    messages: [
+      { id: "s1", conversation_id: "781", ts: now - 60000, from_me: false, sender_name: "Coach Nick", text: "This is our schedule", kind: "photo", status: "received" },
+      { id: "s2", conversation_id: "781", ts: now - 30000, from_me: false, sender_name: "Sam", text: "Thanks", kind: "text", status: "received" },
+    ],
+  }, bt);
+  await Promise.all(waits.splice(0));
+
+  // A 1x1 PNG.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  let r = await call(env, "POST", "/bridge/photos/missing", { ids: ["s1.1", "s1.2"] }, bt);
+  assert.deepEqual(r.data.missing, ["s1.1", "s1.2"]);
+
+  const photo = { id: "s1.1", message_id: "s1", conversation_id: "781", ts: now - 60000, mime: "image/png", width: 1, height: 1, data: png };
+  r = await call(env, "POST", "/bridge/photo", photo, bt);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal((await call(env, "POST", "/bridge/photo", { ...photo, mime: "image/heic" }, bt)).status, 400);
+  assert.equal((await call(env, "POST", "/bridge/photo", { ...photo, data: "not base64!" }, bt)).status, 400);
+  assert.equal((await call(env, "POST", "/bridge/photo", { ...photo, id: "big", data: "A".repeat(1_700_000) }, bt)).status, 413);
+  assert.equal((await call(env, "POST", "/bridge/photo", photo)).status, 401);
+
+  r = await call(env, "POST", "/bridge/photos/missing", { ids: ["s1.1", "s1.2"] }, bt);
+  assert.deepEqual(r.data.missing, ["s1.2"]);
+
+  // Texts list their photos.
+  const recent = await tool(env, "get_recent_texts", { since: new Date(now - 3600000).toISOString() });
+  const all = JSON.stringify(recent);
+  assert.match(all, /"photo_ids":\["s1.1"\]/);
+  const conv = await tool(env, "get_conversation", { conversation: "781" });
+  const withPhoto = JSON.stringify(conv).includes('"s1.1"');
+  assert.ok(withPhoto, JSON.stringify(conv));
+  const found = await tool(env, "search_texts", { query: "schedule" });
+  assert.ok(JSON.stringify(found).includes('"s1.1"'));
+
+  // view_photos returns the picture itself.
+  r = await mcp(env, "tools/call", { name: "view_photos", arguments: { photo_ids: ["s1.1", "nope.0"] } });
+  const content = r.data.result.content;
+  assert.ok(!r.data.result.isError);
+  const img = content.find((c) => c.type === "image");
+  assert.deepEqual([img.mimeType, img.data], ["image/png", png]);
+  assert.match(content[0].text, /Coach Nick/);
+  assert.ok(content.some((c) => c.type === "text" && /nope\.0/.test(c.text)));
+  r = await mcp(env, "tools/call", { name: "view_photos", arguments: { photo_ids: ["nope.0"] } });
+  assert.ok(r.data.result.isError);
+
+  // Deleting the text on the phone deletes its photo.
+  await call(env, "POST", "/bridge/ingest", { conversations: [], messages: [], deleted_ids: ["s1"] }, bt);
+  await Promise.all(waits.splice(0));
+  r = await call(env, "POST", "/bridge/photos/missing", { ids: ["s1.1"] }, bt);
+  assert.deepEqual(r.data.missing, ["s1.1"]);
+
+  // Old photos are pruned with old texts.
+  await call(env, "POST", "/bridge/photo", { ...photo, id: "old.0", ts: now - 40 * 86400000 }, bt);
+  await call(env, "POST", "/bridge/ingest", { conversations: [], messages: [] }, bt);
+  await Promise.all(waits.splice(0));
+  r = await call(env, "POST", "/bridge/photos/missing", { ids: ["old.0"] }, bt);
+  assert.deepEqual(r.data.missing, ["old.0"]);
 });
