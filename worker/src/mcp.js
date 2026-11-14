@@ -502,6 +502,15 @@ export async function linkStatus(ctx) {
   return status;
 }
 
+// bridgeReadsCalls says whether a bridge version (1.0.N, from 1.0.8, or a
+// dev build) knows how to read calls.
+export function bridgeReadsCalls(version) {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(version || ""));
+  if (!m) return String(version || "") !== "";
+  const [maj, min, patch] = m.slice(1).map(Number);
+  return maj > 1 || (maj === 1 && (min > 0 || patch >= 8));
+}
+
 // callsStatus says whether the bridge can read the phone's call log.
 export function callsStatus(hb, zone) {
   const out = { ok: false, summary: "" };
@@ -512,7 +521,11 @@ export function callsStatus(hb, zone) {
       out.summary = "Working.";
       break;
     case "":
-      out.summary = "The phone's texts-bridge is too old to read calls. Update it by running the installer in Termux again.";
+      // Bridges before 1.0.8 can't read calls; a newer one sends its first
+      // calls state within a minute of starting.
+      out.summary = bridgeReadsCalls(hb.bridge_version)
+        ? "The phone hasn't checked calls yet; it does within a minute of texts-bridge starting."
+        : "The phone's texts-bridge is too old to read calls. Update it by running the installer in Termux again.";
       break;
     default:
       out.summary = hb.calls_detail || "Calls can't be read right now (" + hb.calls_state + ").";

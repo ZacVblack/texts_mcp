@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import worker, { deriveToken, _resetSchemaFlag } from "../src/index.js";
+import { bridgeReadsCalls } from "../src/mcp.js";
 
 const PASS = "correct horse battery staple";
 const BASE = "https://texts-mcp.example.workers.dev";
@@ -330,11 +331,16 @@ test("calls: upload, status, get_recent_calls with names, missed and called back
   await call(env, "PUT", "/bridge/session", sealed, bt);
 
   // An older bridge sends no calls state: the status says to update it.
-  await call(env, "POST", "/bridge/heartbeat", { state: "connected", phone_responding: true, bridge_version: "t" }, bt);
+  await call(env, "POST", "/bridge/heartbeat", { state: "connected", phone_responding: true, bridge_version: "1.0.7" }, bt);
   let st = await tool(env, "texts_status");
   assert.equal(st.link.ok, true);
   assert.equal(st.link.calls.ok, false);
   assert.match(st.link.calls.summary, /too old/);
+  // A new bridge that hasn't checked calls yet isn't called too old.
+  await call(env, "POST", "/bridge/heartbeat", { state: "connected", phone_responding: true, bridge_version: "1.0.8" }, bt);
+  st = await tool(env, "texts_status");
+  assert.match(st.link.calls.summary, /hasn't checked calls yet/);
+  assert.deepEqual(["1.0.7", "1.0.8", "1.0.12", "1.1.0", "2.0.0", "dev", ""].map(bridgeReadsCalls), [false, true, true, true, true, true, false]);
 
   // A bridge that can't read calls says why.
   await call(env, "POST", "/bridge/heartbeat", {
