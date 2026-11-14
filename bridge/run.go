@@ -94,6 +94,12 @@ type runner struct {
 	convMu   sync.Mutex
 	convDone map[string]int64
 
+	// Reading the phone's call log (calls.go).
+	callsMu        sync.Mutex
+	callsSt        string
+	callsDetail    string
+	callsCheckedAt atomic.Int64
+
 	// Sending approved texts (send.go).
 	sent   sendLedger
 	echoes echoWaiters
@@ -145,6 +151,7 @@ func cmdRun(ctx context.Context, path string, log zerolog.Logger, debug bool) er
 
 	go r.queue.Run(ctx)
 	go r.heartbeatLoop(ctx)
+	go r.callLoop(ctx)
 
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
@@ -253,6 +260,7 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			}
 		}
 		state, detail := r.currentState()
+		callsState, callsDetail := r.callsState()
 		hb := &Heartbeat{
 			State:           state,
 			Detail:          detail,
@@ -270,6 +278,9 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 			PhotoPreviews:   int(r.photosPreview.Load()),
 			FullPhotosAsked: int(r.photosFullAsked.Load()),
 			PhotosNoMedia:   int(photosNoMedia.Load()),
+			CallsState:      callsState,
+			CallsDetail:     callsDetail,
+			CallsCheckedAt:  r.callsCheckedAt.Load(),
 		}
 		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := r.wc.SendHeartbeat(hctx, hb); err != nil {

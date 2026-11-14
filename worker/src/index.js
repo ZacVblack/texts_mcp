@@ -122,6 +122,17 @@ const SCHEMA = [
      received_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS photos_message ON photos (message_id)`,
   `CREATE INDEX IF NOT EXISTS photos_ts ON photos (ts)`,
+  // Calls from the phone's call log (Termux:API), read-only.
+  `CREATE TABLE IF NOT EXISTS calls (
+     id TEXT PRIMARY KEY,
+     ts INTEGER NOT NULL,
+     number TEXT,
+     name TEXT,
+     direction TEXT NOT NULL,
+     duration_sec INTEGER NOT NULL DEFAULT 0,
+     received_at INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS calls_ts ON calls (ts)`,
+  `CREATE INDEX IF NOT EXISTS calls_received ON calls (received_at)`,
   ...OUTBOX_SCHEMA,
 ];
 
@@ -271,6 +282,9 @@ async function handleBridge(request, env, ctx, sub) {
         full_photos_asked: num(b.full_photos_asked),
         photos_no_media: num(b.photos_no_media),
         can_send: b.can_send === true,
+        calls_state: str(b.calls_state, 40),
+        calls_detail: str(b.calls_detail, 300),
+        calls_checked_at_ms: num(b.calls_checked_at_ms),
       };
       await kvPut(db, "heartbeat", JSON.stringify(hb));
       return json({ ok: true });
@@ -297,6 +311,12 @@ async function handleBridge(request, env, ctx, sub) {
       const b = await readJson(request);
       await touchPhoneContact(db);
       return json(await storePhoto(db, b || {}, Date.now()));
+    }
+
+    if (sub === "/calls" && request.method === "POST") {
+      const b = await readJson(request);
+      await touchPhoneContact(db);
+      return json({ ok: true, ...(await storeCalls(db, b || {}, Date.now())) });
     }
 
     if (sub === "/ingest" && request.method === "POST") {
@@ -428,11 +448,51 @@ export async function prune(env, now = Date.now()) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM messages WHERE ts < ?").bind(cutoff),
     env.DB.prepare("DELETE FROM photos WHERE ts < ?").bind(cutoff),
+    env.DB.prepare("DELETE FROM calls WHERE ts < ?").bind(cutoff),
     env.DB.prepare(
       "DELETE FROM conversations WHERE COALESCE(last_message_at, 0) < ? AND id NOT IN (SELECT DISTINCT conversation_id FROM messages)"
     ).bind(cutoff),
   ]);
   await pruneOutbox(env.DB, cutoff);
+}
+
+// ---------- calls ----------
+
+export const CALL_DIRECTIONS = new Set(["incoming", "outgoing", "missed", "rejected", "voicemail", "unknown"]);
+
+// storeCalls saves calls the bridge read from the phone's call log. A call
+// that is uploaded again keeps when it first arrived, so it isn't news twice.
+export async function storeCalls(db, b, now) {
+  const stmts = [];
+  for (const c of Array.isArray(b.calls) ? b.calls.slice(0, 500) : []) {
+    const id = str(c && c.id, 100);
+    const ts = num(c && c.ts);
+    if (!id || !ts) continue;
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO calls (id, ts, number, name, direction, duration_sec, received_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, number = excluded.number, name = excluded.name,
+             direction = excluded.direction, duration_sec = excluded.duration_sec`
+        )
+        .bind(
+          id,
+          ts,
+          str(c.number, 60),
+          str(c.name, 200),
+          CALL_DIRECTIONS.has(c.direction) ? c.direction : "unknown",
+          Math.max(0, Math.min(num(c.duration_sec), 7 * 86400)),
+          // Calls from the first upload after setup count as already seen, so
+          // they don't show up as "arrived late" in the next summary.
+          c.backfill ? Math.min(ts, now) : now
+        )
+    );
+  }
+  for (let i = 0; i < stmts.length; i += 100) {
+    await db.batch(stmts.slice(i, i + 100));
+  }
+  return { calls: stmts.length };
 }
 
 // ---------- photos ----------
