@@ -154,6 +154,11 @@ type Heartbeat struct {
 	FullPhotosAsked int `json:"full_photos_asked,omitempty"`
 	// PhotosNoMedia counts photos seen with nothing to download yet.
 	PhotosNoMedia int `json:"photos_no_media,omitempty"`
+	// CallsState says whether the phone's call log can be read (calls.go),
+	// CallsDetail why not, and CallsCheckedAt when it was last read.
+	CallsState     string `json:"calls_state,omitempty"`
+	CallsDetail    string `json:"calls_detail,omitempty"`
+	CallsCheckedAt int64  `json:"calls_checked_at_ms,omitempty"`
 }
 
 func (w *workerClient) SendHeartbeat(ctx context.Context, hb *Heartbeat) error {

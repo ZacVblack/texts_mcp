@@ -150,7 +150,7 @@ test("bridge flow: session, heartbeat, ingest, MCP tools", async () => {
   assert.equal(r.status, 202);
   r = await mcp(env, "tools/list", {});
   assert.deepEqual(r.data.result.tools.map((t) => t.name).sort(),
-    ["cancel_text", "get_conversation", "get_recent_texts", "list_conversations", "prepare_new_text", "prepare_text", "search_texts", "send_status", "send_text", "texts_status", "view_photos"]);
+    ["cancel_text", "get_conversation", "get_recent_calls", "get_recent_texts", "list_conversations", "prepare_new_text", "prepare_text", "search_texts", "send_status", "send_text", "texts_status", "view_photos"]);
   r = await mcp(env, "nope/method", {});
   assert.equal(r.data.error.code, -32601);
   const getRes = await worker.fetch(new Request(BASE + "/mcp/" + (await deriveToken(PASS, "texts-mcp:mcp:v1"))), env, ctx);
@@ -321,4 +321,122 @@ test("photos: a preview is replaced by the full photo, never the other way", asy
   const img = r.data.result.content.find((c) => c.type === "image");
   assert.deepEqual([img.mimeType, img.data], ["image/png", big]);
   assert.doesNotMatch(r.data.result.content[0].text, /preview/);
+});
+
+test("calls: upload, status, get_recent_calls with names, missed and called back", async () => {
+  const env = setup();
+  const bt = await deriveToken(PASS, "texts-mcp:bridge:v1");
+  const sealed = { v: 1, salt: "c2FsdA==", nonce: "bm9uY2U=", data: "ZGF0YQ==", saved_at: 1234, pairing_id: "p1" };
+  await call(env, "PUT", "/bridge/session", sealed, bt);
+
+  // An older bridge sends no calls state: the status says to update it.
+  await call(env, "POST", "/bridge/heartbeat", { state: "connected", phone_responding: true, bridge_version: "t" }, bt);
+  let st = await tool(env, "texts_status");
+  assert.equal(st.link.ok, true);
+  assert.equal(st.link.calls.ok, false);
+  assert.match(st.link.calls.summary, /too old/);
+
+  // A bridge that can't read calls says why.
+  await call(env, "POST", "/bridge/heartbeat", {
+    state: "connected", phone_responding: true, bridge_version: "t",
+    calls_state: "no_permission", calls_detail: "Calls are off: allow Call logs.", calls_checked_at_ms: Date.now(),
+  }, bt);
+  st = await tool(env, "texts_status");
+  assert.equal(st.link.calls.ok, false);
+  assert.equal(st.link.calls.summary, "Calls are off: allow Call logs.");
+  let calls = await tool(env, "get_recent_calls", {});
+  assert.match(calls.summary, /No calls.*Calls can't be read right now: Calls are off/);
+
+  await call(env, "POST", "/bridge/heartbeat", {
+    state: "connected", phone_responding: true, bridge_version: "t", calls_state: "ok", calls_checked_at_ms: Date.now(),
+  }, bt);
+  st = await tool(env, "texts_status");
+  assert.equal(st.link.calls.ok, true);
+  assert.ok(st.link.calls.last_checked);
+
+  const now = Date.now();
+  // Mom has a text conversation, so her unnamed call gets her name and the conversation.
+  await call(env, "POST", "/bridge/ingest", {
+    conversations: [
+      { id: "mom", name: "", folder: "inbox", last_message_at_ms: now - 60000,
+        participants: [{ id: "1", name: "Me", is_me: true }, { id: "2", name: "Mom", number: "+1 (734) 555-0101" }] },
+    ],
+    messages: [
+      { id: "t1", conversation_id: "mom", ts: now - 10 * 60000, from_me: true, sender_name: "Me", text: "Sorry, in class", kind: "text", status: "delivered" },
+    ],
+  }, bt);
+
+  const batch = {
+    calls: [
+      { id: "call-a", ts: now - 20 * 60000, number: "7345550101", name: "", direction: "missed", duration_sec: 0 },
+      { id: "call-b", ts: now - 15 * 60000, number: "+17345550199", name: "Coach Nick", direction: "missed", duration_sec: 0 },
+      { id: "call-c", ts: now - 5 * 60000, number: "+17345550199", name: "Coach Nick", direction: "outgoing", duration_sec: 135 },
+      { id: "call-d", ts: now - 3 * 60000, number: "", name: "", direction: "rejected", duration_sec: 0 },
+      { id: "call-e", ts: now - 2 * 60000, number: "+17345550142", name: "Dad", direction: "incoming", duration_sec: 3725 },
+      { id: "call-old", ts: now - 5 * 3600000, number: "+17345550142", name: "Dad", direction: "outgoing", duration_sec: 60, backfill: true },
+      { id: "", ts: now },
+      { id: "call-weird", ts: now - 1000, number: "5", direction: "teleport", duration_sec: -4 },
+    ],
+  };
+  let r = await call(env, "POST", "/bridge/calls", batch, bt);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.calls, 7);
+  // Uploading the same calls again changes nothing.
+  r = await call(env, "POST", "/bridge/calls", batch, bt);
+  assert.equal(r.status, 200);
+  assert.equal((await env.DB.prepare("SELECT COUNT(*) AS n FROM calls").first()).n, 7);
+  // Unauthenticated uploads are refused.
+  assert.equal((await call(env, "POST", "/bridge/calls", batch, "wrong")).status, 401);
+
+  calls = await tool(env, "get_recent_calls", { minutes: 60 });
+  assert.equal(calls.total_calls, 6);
+  assert.equal(calls.calls_status.ok, true);
+  // Newest first.
+  assert.deepEqual(calls.calls.map((c) => c.who), ["5", "Dad", "Private number", "Coach Nick", "Coach Nick", "Mom"]);
+  const weird = calls.calls[0];
+  assert.equal(weird.direction, "call");
+  const dad = calls.calls[1];
+  assert.deepEqual([dad.direction, dad.duration, dad.number], ["answered", "1 h 2 min", "+1 734-555-0142"]);
+  const mom = calls.calls.find((c) => c.who === "Mom");
+  assert.equal(mom.missed, true);
+  assert.equal(mom.conversation_id, "mom");
+  assert.equal(mom.called_back, false);
+  assert.equal(mom.texted_back, true);
+  const nickMissed = calls.calls.find((c) => c.who === "Coach Nick" && c.missed);
+  assert.equal(nickMissed.called_back, true);
+  assert.equal(calls.calls.find((c) => c.who === "Coach Nick" && !c.missed).duration, "2 min 15 s");
+  const priv = calls.calls.find((c) => c.who === "Private number");
+  assert.deepEqual([priv.direction, priv.missed, priv.called_back], ["declined", true, undefined]);
+  assert.match(calls.summary, /^6 calls since .*: 3 missed \(Private number, Coach Nick, Mom\), 1 answered, 1 outgoing, 1 other\. 1 missed call not returned yet\.$/);
+
+  // Filters.
+  calls = await tool(env, "get_recent_calls", { minutes: 60, missed_only: true });
+  assert.equal(calls.total_calls, 3);
+  calls = await tool(env, "get_recent_calls", { minutes: 60, contact: "mom" });
+  assert.deepEqual(calls.calls.map((c) => c.who), ["Mom"]);
+  calls = await tool(env, "get_recent_calls", { minutes: 60, contact: "555-0199" });
+  assert.equal(calls.total_calls, 2);
+  calls = await tool(env, "get_recent_calls", { minutes: 60, limit: 2 });
+  assert.equal(calls.total_calls, 2);
+  assert.equal(calls.truncated, true);
+  // The backfilled call from 5 hours ago isn't news.
+  calls = await tool(env, "get_recent_calls", { minutes: 60 });
+  assert.ok(!calls.calls.some((c) => c.late));
+
+  // A call that reaches us late (phone was offline) shows in the next window.
+  await call(env, "POST", "/bridge/calls", { calls: [{ id: "call-late", ts: now - 3 * 3600000, number: "+17345550142", name: "Dad", direction: "missed" }] }, bt);
+  calls = await tool(env, "get_recent_calls", { minutes: 30 });
+  const late = calls.calls.find((c) => c.late);
+  assert.equal(late.who, "Dad");
+  // Dad called later and they talked, so it counts as returned.
+  assert.equal(late.called_back, true);
+
+  // Old calls are pruned with the texts.
+  await call(env, "POST", "/bridge/calls", { calls: [{ id: "ancient", ts: now - 40 * 86400000, number: "1", direction: "missed" }] }, bt);
+  await call(env, "POST", "/bridge/ingest", { messages: [{ id: "t2", conversation_id: "mom", ts: now, text: "hi", kind: "text" }] }, bt);
+  await Promise.all(waits.splice(0));
+  assert.equal(await env.DB.prepare("SELECT id FROM calls WHERE id = 'ancient'").first(), null);
+
+  const bad = await mcp(env, "tools/call", { name: "get_recent_calls", arguments: { since: "nope" } });
+  assert.equal(bad.data.result.isError, true);
 });

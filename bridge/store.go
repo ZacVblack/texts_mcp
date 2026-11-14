@@ -149,6 +149,8 @@ type bridgeState struct {
 	// photos. The key changes when a version can fetch photos an older one
 	// couldn't (HEIC, then previews), so recent photos are looked for again.
 	PhotoBackfillAtMs int64 `json:"photo_backfill_v3_at_ms,omitempty"`
+	// CallsSent lists the newest calls already uploaded (calls.go).
+	CallsSent []string `json:"calls_sent,omitempty"`
 }
 
 func statePath() string { return filepath.Join(defaultConfigDir(), "state.json") }

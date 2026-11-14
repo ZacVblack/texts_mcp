@@ -1,6 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # Installs texts-bridge in Termux, asks for the Worker address and passphrase,
 # and makes it start on its own when the phone boots (needs the Termux:Boot app).
+# Phone calls also reach Claude when the Termux:API app is installed and allowed
+# to read the call log; texts work either way.
 #
 # Run inside Termux:
 #   curl -fsSLo install.sh https://raw.githubusercontent.com/ZacVblack/texts_mcp/main/scripts/termux-install.sh && bash install.sh
@@ -24,6 +26,8 @@ APT_OPTS=(-q -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-co
 apt-get -q update || true
 apt-get "${APT_OPTS[@]}" full-upgrade || true
 apt-get "${APT_OPTS[@]}" install curl ca-certificates procps
+# termux-api gives texts-bridge the termux-call-log command, for phone calls.
+apt-get "${APT_OPTS[@]}" install termux-api || echo "Could not install termux-api; texts still work, calls won't."
 
 echo "Downloading texts-bridge..."
 curl -fL --retry 3 -o "$BIN.new" "https://github.com/$REPO/releases/latest/download/$ASSET"
@@ -77,6 +81,45 @@ if ! grep -q "start-texts-bridge" "$HOME/.bashrc"; then
 [ -x "$HOME/.termux/boot/start-texts-bridge" ] && "$HOME/.termux/boot/start-texts-bridge"
 RC
 fi
+
+# Phone calls: texts-bridge reads the call log through the Termux:API app.
+# Ask now, while Termux is on screen, so Android can show its permission prompt.
+echo
+echo "Checking that texts-bridge can read your phone calls..."
+read_calls() { timeout 20 termux-call-log -l 1 2>&1 || true; }
+CALLS_OUT="no-command"
+if command -v termux-call-log >/dev/null 2>&1; then
+  CALLS_OUT="$(read_calls)"
+  case "$CALLS_OUT" in
+    *ermission*)
+      echo "Android is asking whether Termux:API may read your call log. Tap Allow."
+      if [ -t 0 ]; then
+        read -r -p "Press Enter after you tap Allow. " _ || true
+        CALLS_OUT="$(read_calls)"
+      fi
+      ;;
+  esac
+fi
+case "$CALLS_OUT" in
+  \[*)
+    echo "Calls: working. Missed and recent calls will reach Claude too."
+    ;;
+  *ermission*)
+    echo "Calls: not allowed yet. Open Settings > Apps > Termux:API > Permissions > Call logs > Allow."
+    echo "  (If Android says it's a restricted setting, open the Termux:API app page, tap the 3 dots > Allow restricted settings, then try again.)"
+    ;;
+  no-command)
+    echo "Calls: the termux-api package didn't install. Run this installer again."
+    ;;
+  "")
+    echo "Calls: the Termux:API app didn't answer. Install Termux:API from the same place you got Termux"
+    echo "  (F-Droid or GitHub; the two must come from the same place), open it once, then run this installer again."
+    ;;
+  *)
+    echo "Calls: termux-call-log said: $(printf '%s' "$CALLS_OUT" | head -c 200)"
+    ;;
+esac
+echo "(Texts work either way. Once calls work, texts-bridge picks them up by itself.)"
 
 # Start it now too, without waiting for a reboot.
 # Stop the old copy first and wait for it to exit, or the start script would

@@ -2,10 +2,11 @@
 
 Read your Android phone's texts from Claude, and let Claude send a text after you approve the exact draft. Free.
 
-- **Covers:** SMS, MMS and RCS (blue-bubble style chat), group chats, texts you sent, muted and archived chats.
+- **Covers:** SMS, MMS and RCS (blue-bubble style chat), group chats, texts you sent, muted and archived chats. Also your phone calls (missed, answered, outgoing), read from the call log, if you install Termux:API.
 - **Reads freely, sends only with your yes:** Claude can read and search texts. To send one it first shows you a preview (who it goes to and the exact words), and sends only after you approve that exact draft. It can't delete or change anything.
 - **Existing chats first:** a text goes into the conversation you already have with that person or group (a group chat gets one text in the group). A new conversation is only started when you ask for one.
 - **Private:** login and verification codes are blanked out on the phone before they leave it. Spam, blocked and deleted chats never leave the phone. Texts older than 30 days are deleted.
+- **Calls are read-only:** Claude sees who called or was called, when, for how long, and whether it was missed. Not the audio, and it can't place or answer calls. Blocked calls never leave the phone. Calls older than 30 days are deleted.
 - **Free:** the phone does the work in Termux, and a free Cloudflare Worker stores the texts and serves them to Claude.
 
 ```
@@ -53,12 +54,12 @@ Use **Firefox** for this step. Chrome (and other Chromium browsers) tie their Go
 
 ### 4. Run it on the phone
 
-1. Install **F-Droid** from [f-droid.org](https://f-droid.org), then install **Termux** and **Termux:Boot** from F-Droid. (The Play Store version of Termux is outdated and won't work.)
+1. Install **F-Droid** from [f-droid.org](https://f-droid.org), then install **Termux**, **Termux:Boot** and **Termux:API** from F-Droid. (The Play Store version of Termux is outdated and won't work. All Termux apps must come from the same place.) Termux:API is only needed for phone calls.
 2. Open Termux and run:
    ```
    curl -fsSLo install.sh https://raw.githubusercontent.com/ZacVblack/texts_mcp/main/scripts/termux-install.sh && bash install.sh
    ```
-3. Type the same Worker address and passphrase.
+3. Type the same Worker address and passphrase. When Android asks whether Termux:API may read your call log, tap **Allow** (and press Enter in Termux). The installer prints whether calls work.
 4. In Android settings, set **Apps** > **Termux** > **Battery** to **Unrestricted**.
 5. Open the **Termux:Boot** app once, so it starts texts-bridge after every reboot. If Android refuses to install Termux:Boot (Play Protect blocks it as "built for an older version of Android" and offers no **Install anyway**), skip it: texts-bridge also starts whenever you open Termux, so just open Termux once after the phone restarts.
 
@@ -74,6 +75,7 @@ Treat the connector address like a password: anyone with it can read your texts.
 - **Opening Messages for web in a browser:** texts-bridge takes the link back within a few minutes, so use the phone app instead.
 - **"Run texts-bridge pair":** Google unlinked it (for example after a password change, signing out, or a sign-in copied from Chrome). The log line says which. Double-click the .exe on the computer again and link from a Firefox private window. The phone picks up the new link by itself within 2 minutes.
 - **Check it's alive:** in Termux, `tail -f ~/.texts-mcp/bridge.log`. Or ask Claude for the texts link status.
+- **Calls:** texts-bridge reads the call log every 3 minutes with `termux-call-log`. If calls are missing, Claude's texts status says why. To test by hand, run `termux-call-log -l 1` in Termux: it should print your last call. To stop sharing calls, turn off **Call logs** in **Settings** > **Apps** > **Termux:API** > **Permissions**.
 - **Update:** run the install command in Termux again, and download the newest .exe. (The .exe is only needed for pairing; sending only needs the phone updated.)
 - **Change the passphrase:** change the `PASSPHRASE` secret, run `texts-bridge setup` on both devices, then pair again. The connector address changes too.
 
@@ -86,7 +88,8 @@ Treat the connector address like a password: anyone with it can read your texts.
 | `get_conversation` | One conversation by name, number or id |
 | `search_texts` | Find texts containing words, each with the texts just before and after it |
 | `view_photos` | Shows photos sent in texts (pass the `photo_ids` a text lists) |
-| `texts_status` | Whether the phone link is working |
+| `get_recent_calls` | Calls from the last N minutes, newest first: missed, answered, outgoing, declined and voicemail, with duration, a one-line summary, and for each missed call whether you've called or texted back |
+| `texts_status` | Whether the phone link is working, and whether calls can be read |
 | `prepare_text` | Preview a text into an existing conversation: a ready-to-show draft with who it goes to and the exact words, plus the last few texts. Sends nothing. |
 | `prepare_new_text` | Preview a text that starts a new conversation with a number. Refuses if you already have a chat with that number. |
 | `send_text` | Send a previewed text after you approve it |
